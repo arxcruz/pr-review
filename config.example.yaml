@@ -1,0 +1,157 @@
+# ==============================================================================
+# pr-review Configuration
+# ==============================================================================
+# Place this file at ~/.config/pr-review/config.yaml or .pr-review.yaml in your workspace.
+# Environment variables like ${GITHUB_TOKEN} or ${ANTHROPIC_API_KEY} are automatically expanded.
+
+# Default AI provider to use if not overridden via the --provider flag
+# Options: "ollama" (or "local"), "vllm", "llamacpp", "anthropic" (or "claude"), "gemini", "openai"
+default_ai_provider: "ollama"
+
+# Directory where generated AI review markdown files will be saved and loaded from.
+# Supports relative paths (e.g. "reviews"), absolute paths, or home paths (e.g. "~/.config/pr-review/reviews").
+# If left commented or empty, reviews will be stored in the reviews directory or working directory.
+reviews_dir: "reviews"
+
+# Review Guidelines:
+# pr-review loads review guidelines from 'review.md' in the current workspace
+# or ~/.config/pr-review/review.md by default.
+# You can optionally specify a custom markdown file path:
+# review_file: "review.md"
+
+# AI Providers & Endpoints
+# You can define multiple models per provider, and/or multiple endpoints/servers per provider.
+ai:
+  # Method 1: Multiple models under individual providers
+  ollama:
+    base_url: "http://localhost:11434"
+    models:
+      - "qwen2.5-coder:latest"
+      - "deepseek-coder-v2:16b"
+    temperature: 0.2
+
+  vllm:
+    base_url: "http://localhost:8000/v1"
+    model: "Qwen/Qwen2.5-Coder-32B-Instruct"
+    api_key: ""
+    temperature: 0.2
+
+  anthropic:
+    base_url: "https://api.anthropic.com"
+    api_key: "${ANTHROPIC_API_KEY}"
+    models:
+      - "claude-3-7-sonnet-20250219"
+      - "claude-3-5-haiku-20241022"
+    temperature: 0.2
+    max_tokens: 4096
+
+  gemini:
+    base_url: "https://generativelanguage.googleapis.com"
+    api_key: "${GEMINI_API_KEY}"
+    model: "gemini-2.5-flash"
+    temperature: 0.2
+
+  openai:
+    base_url: "https://api.openai.com/v1"
+    api_key: "${OPENAI_API_KEY}"
+    model: "gpt-4o"
+    temperature: 0.2
+
+  # Method 2: Custom multi-endpoint / multi-server configuration
+  # Ideal when you have multiple servers running Ollama, vLLM, llama.cpp, or LM Studio
+  endpoints:
+    - id: "gpu-vllm"
+      name: "Remote GPU Cluster"
+      provider: "vllm"
+      base_url: "http://192.168.1.100:8000/v1"
+      api_key: "${VLLM_API_KEY}"
+      models:
+        - "deepseek-ai/DeepSeek-Coder-V2-Instruct"
+        - "Qwen/Qwen2.5-Coder-32B-Instruct"
+      temperature: 0.2
+
+    - id: "local-llamacpp"
+      name: "llama-server (Local)"
+      provider: "llamacpp"
+      base_url: "http://localhost:8080/v1"
+      model: "default"
+      temperature: 0.2
+
+# Git Provider Credentials
+git:
+  # GitHub (supports github.com and GitHub Enterprise)
+  github:
+    token: "${GITHUB_TOKEN}"
+    base_url: "" # Leave empty for github.com, or set to "https://ghe.company.com/api/v3"
+
+  # GitLab (supports gitlab.com and Self-hosted GitLab)
+  gitlab:
+    token: "${GITLAB_TOKEN}"
+    base_url: "" # Leave empty for gitlab.com, or set to "https://gitlab.company.com"
+
+  # Gerrit Code Review
+  gerrit:
+    base_url: "https://review.opendev.org" # or your organization's Gerrit URL
+    username: "${GERRIT_USERNAME}"         # Gerrit HTTP username (optional for public read-only)
+    password: "${GERRIT_PASSWORD}"         # Gerrit HTTP password/token (generated in Gerrit user settings)
+
+# Projects / Repositories to track and review
+projects:
+  - id: "backend"
+    provider: "github"
+    owner: "myorg"
+    repo: "backend"
+    description: "Core microservice backend built with Go and gRPC. Follows clean architecture."
+    default_filters:
+      labels: ["needs-review"]
+      authors: []
+
+  - id: "frontend"
+    provider: "gitlab"
+    project_path: "mygroup/subgroup/frontend" # Project path or numeric ID
+    description: "React and TypeScript web frontend using Tailwind CSS and Next.js."
+    default_filters:
+      labels: []
+      authors: ["alice", "bob"]
+
+  - id: "nova"
+    provider: "gerrit"
+    repo: "openstack/nova"
+    gerrit_url: "https://review.opendev.org" # Optional override if different from git.gerrit.base_url
+    description: "OpenStack Compute service (Nova) written in Python."
+    default_filters:
+      labels: []
+      authors: []
+
+# Custom TUI Keybindings
+# Configure your preferred keys (great for custom layouts like Moonlander, Ergodox, Colemak, Dvorak).
+# Each keybinding accepts either a single string (e.g. "k") or a list (e.g. ["k", "up"]).
+keybindings:
+  up: ["k", "up"]                 # Scroll up line-by-line in viewports or PR list
+  down: ["j", "down"]             # Scroll down line-by-line in viewports or PR list
+  page_up: ["ctrl+b", "pgup"]     # Scroll full page up
+  page_down: ["ctrl+f", "pgdown"] # Scroll full page down
+  half_page_up: ["ctrl+u"]        # Scroll half page up (vim style)
+  half_page_down: ["ctrl+d"]      # Scroll half page down (vim style)
+  top: ["g", "home"]              # Jump to top of content
+  bottom: ["G", "end"]            # Jump to bottom of content
+  switch_pane: ["tab", "shift+tab"] # Toggle focus between PR list and Details pane
+  tab_overview: ["1"]             # Switch to PR Overview tab
+  tab_diff: ["2", "d"]            # Switch to Diff tab
+  tab_review: ["3"]               # Switch to AI Review tab
+  run_review: ["r"]               # Generate or re-generate AI review
+  post_review: ["P"]              # Post AI review comment to remote PR
+  next_project: ["p"]             # Switch to next configured project/repo
+  refresh: ["R"]                  # Refresh PR list from git provider
+  filter: ["/"]                   # Search / filter PRs in real-time
+  select_ai: ["a"]                # Open AI provider & model selector modal
+  select_review: ["v"]            # Open modal list of saved AI review versions
+  prev_review: ["[", "alt+left"]  # Cycle to previous review version
+  next_review: ["]", "alt+right"] # Cycle to next review version
+  compare_reviews: ["c"]          # Toggle side-by-side review comparison mode
+  delete_review: ["x", "delete"]  # Delete currently viewed cached review
+  delete_all_reviews: ["X"]       # Delete all cached reviews for current PR
+  help: ["?"]                     # Toggle help popup
+  quit: ["q", "ctrl+c"]           # Quit application
+
+

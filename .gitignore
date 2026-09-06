@@ -1,0 +1,25 @@
+# Binaries
+/pr-review
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Local config & review artifacts
+reviews/
+.pr-review.yaml
+ci-framework-*.md
+
+# Editor and OS metadata
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
