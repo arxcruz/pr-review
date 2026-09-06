@@ -327,28 +327,51 @@ pr-review config show
 
 ## 🧱 Architecture
 
+`pr-review` is designed with modular, decoupled packages separating CLI commands, interactive TUI components, git provider abstractions, and AI review engines:
+
 ```
 pr-review/
-├── cmd/pr-review/        # CLI commands (Cobra)
-│   ├── root.go           # Global flags & init
-│   ├── list.go           # Listing & filtering PRs/MRs
-│   ├── review.go         # Executing AI reviews & posting comments
-│   ├── diff.go           # Viewing diffs
-│   └── config_cmd.go     # Config init and inspection
+├── cmd/pr-review/            # CLI subcommands & entrypoint (Cobra)
+│   ├── main.go               # Main application entrypoint
+│   ├── root.go               # Global flags, init, and PersistentPreRunE
+│   ├── tui.go                # TUI launcher command (`pr-review tui`)
+│   ├── list.go               # List & filter PRs across providers (`pr-review list`)
+│   ├── diff.go               # Inspect formatted git diffs (`pr-review diff`)
+│   ├── review.go             # Run AI reviews & post comments (`pr-review review`)
+│   ├── clean.go              # Delete & manage cached reviews (`pr-review clean`)
+│   └── config_cmd.go         # Config show, init, and wizard commands (`pr-review config`)
 ├── pkg/
-│   ├── config/           # YAML config loader, defaults, env expansion
-│   ├── gitprovider/      # Common Provider interface, GitHub and GitLab clients
-│   ├── ai/               # AI Engine interface, Ollama, Anthropic, Gemini, OpenAI
-│   └── review/           # High-level ReviewService orchestrator & Glamour/Lipgloss formatters
-└── config.example.yaml   # Sample configuration file
+│   ├── config/               # YAML loader, env var expansion, endpoints & targets
+│   ├── gitprovider/          # Provider interface, GitHub, GitLab, and Gerrit clients
+│   ├── ai/                   # AI Engine interface, Ollama, vLLM, llama.cpp, Claude, Gemini, OpenAI
+│   ├── review/               # High-level ReviewService orchestrator & Glamour/Lipgloss renderers
+│   └── tui/                  # Bubble Tea interactive TUI dashboard & configuration wizard
+│       ├── app.go            # Main TUI state model, keyboard event handlers, & lifecycle
+│       ├── views.go          # Split-pane rendering, side-by-side comparison, modals, & tables
+│       ├── styles.go         # Lipgloss color palette, borders, badges, & typography
+│       └── wizard.go         # Step-by-step TUI AI configuration wizard
+├── docs/                     # Comprehensive guides & documentation
+│   ├── README.md             # Documentation portal & overview
+│   ├── tui.md                # Interactive TUI dashboard guide & keybindings
+│   ├── wizard.md             # TUI AI configuration wizard guide
+│   ├── ai_engines.md         # AI provider & endpoint configuration reference
+│   └── cli.md                # Non-interactive CLI command reference
+├── review.md                 # Default review guidelines and prompt instructions
+└── config.example.yaml       # Sample configuration template
 ```
 
 ---
 
-## 🔮 Roadmap / Future TUI
+## 🔮 Roadmap
 
-The business logic (`pkg/config`, `pkg/gitprovider`, `pkg/ai`, `pkg/review`) is decoupled from the CLI interface.
-In the next milestone, a TUI interface (e.g. built with Bubble Tea / Lipgloss) can directly utilize:
-- `gitprovider.Provider.ListPullRequests()` with live interactive filtering (by label/author).
-- `gitprovider.Provider.GetDiff()` with a split diff viewer.
-- `ai.Engine.Review()` with async streaming review output and one-click comment submission.
+- [x] Multi-Git provider support (GitHub, GitLab, Gerrit)
+- [x] Multi-AI engine support (Ollama, vLLM, llama.cpp, Claude, Gemini, OpenAI)
+- [x] Many-to-many endpoint and multi-model configuration
+- [x] Interactive Terminal User Interface (TUI) with Bubble Tea & Lipgloss
+- [x] Side-by-side multi-model AI review comparison
+- [x] Interactive TUI AI configuration wizard (`pr-review wizard`)
+- [ ] Inline line-level comments and suggestion threads
+- [ ] Bitbucket Cloud and Data Center provider support
+- [ ] Automated GitHub Actions / GitLab CI comment bot integration
+- [ ] Customizable prompt templates per project or file extension
+
