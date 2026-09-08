@@ -63,6 +63,15 @@ func TestBuildReviewPromptWithoutProjectDescription(t *testing.T) {
 
 func TestFactoryProviders(t *testing.T) {
 	cfg := config.DefaultConfig()
+	// Add all provider endpoints for testing
+	cfg.AI.Endpoints = []config.AIEndpointConfig{
+		{ID: "ollama", Provider: "ollama"},
+		{ID: "vllm", Provider: "vllm"},
+		{ID: "llamacpp", Provider: "llamacpp"},
+		{ID: "anthropic", Provider: "anthropic", APIKey: "test"},
+		{ID: "gemini", Provider: "gemini", APIKey: "test"},
+		{ID: "openai", Provider: "openai", APIKey: "test"},
+	}
 	factory := NewFactory(cfg)
 
 	tests := []struct {
@@ -93,15 +102,13 @@ func TestFactoryProviders(t *testing.T) {
 
 func TestFactoryCustomTargets(t *testing.T) {
 	cfg := config.DefaultConfig()
-	cfg.AI.Endpoints = []config.AIEndpointConfig{
-		{
-			ID:       "remote-vllm",
-			Name:     "Remote vLLM",
-			Provider: "vllm",
-			BaseURL:  "http://192.168.1.100:8000/v1",
-			Models:   []string{"deepseek-ai/DeepSeek-Coder-V2", "Qwen/Qwen2.5-Coder-32B"},
-		},
-	}
+	cfg.AI.Endpoints = append(cfg.AI.Endpoints, config.AIEndpointConfig{
+		ID:       "remote-vllm",
+		Name:     "Remote vLLM",
+		Provider: "vllm",
+		BaseURL:  "http://192.168.1.100:8000/v1",
+		Models:   []string{"deepseek-ai/DeepSeek-Coder-V2", "Qwen/Qwen2.5-Coder-32B"},
+	})
 
 	factory := NewFactory(cfg)
 
@@ -123,3 +130,4 @@ func TestFactoryCustomTargets(t *testing.T) {
 		t.Errorf("expected engine name vllm, got %s", engine2.Name())
 	}
 }
+

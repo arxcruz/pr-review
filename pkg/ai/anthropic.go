@@ -1,14 +1,9 @@
 package ai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
-	"time"
 
 	"github.com/arxcruz/pr-review/pkg/config"
 )
@@ -35,11 +30,11 @@ func (a *AnthropicEngine) Name() string {
 }
 
 type anthropicMessageRequest struct {
-	Model       string                  `json:"model"`
-	MaxTokens   int                     `json:"max_tokens"`
-	System      string                  `json:"system,omitempty"`
-	Messages    []anthropicMessage      `json:"messages"`
-	Temperature float64                 `json:"temperature,omitempty"`
+	Model       string             `json:"model"`
+	MaxTokens   int                `json:"max_tokens"`
+	System      string             `json:"system,omitempty"`
+	Messages    []anthropicMessage `json:"messages"`
+	Temperature float64            `json:"temperature,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -92,40 +87,16 @@ func (a *AnthropicEngine) Review(ctx context.Context, req ReviewRequest) (*Revie
 		},
 	}
 
-	payload, err := json.Marshal(bodyReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode anthropic request: %w", err)
-	}
-
 	endpoint := strings.TrimRight(a.cfg.BaseURL, "/") + "/v1/messages"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create anthropic http request: %w", err)
-	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", a.cfg.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-
-	client := &http.Client{Timeout: 15 * time.Minute}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to anthropic at %s: %w", endpoint, err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read anthropic response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("anthropic API returned error (status %d): %s", resp.StatusCode, string(respBody))
+	headers := map[string]string{
+		"x-api-key":         a.cfg.APIKey,
+		"anthropic-version": "2023-06-01",
 	}
 
 	var anthropicResp anthropicResponse
-	if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
-		return nil, fmt.Errorf("failed to parse anthropic response: %w", err)
+	if err := doJSONPost(ctx, endpoint, headers, bodyReq, &anthropicResp); err != nil {
+		return nil, fmt.Errorf("anthropic: %w", err)
 	}
 
 	if anthropicResp.Error != nil {

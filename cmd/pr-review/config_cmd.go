@@ -95,14 +95,10 @@ var configShowCmd = &cobra.Command{
 		if displayCfg.Git.Gerrit.Password != "" {
 			displayCfg.Git.Gerrit.Password = maskString(displayCfg.Git.Gerrit.Password)
 		}
-		if displayCfg.AI.Anthropic.APIKey != "" {
-			displayCfg.AI.Anthropic.APIKey = maskString(displayCfg.AI.Anthropic.APIKey)
-		}
-		if displayCfg.AI.Gemini.APIKey != "" {
-			displayCfg.AI.Gemini.APIKey = maskString(displayCfg.AI.Gemini.APIKey)
-		}
-		if displayCfg.AI.OpenAI.APIKey != "" {
-			displayCfg.AI.OpenAI.APIKey = maskString(displayCfg.AI.OpenAI.APIKey)
+		for i := range displayCfg.AI.Endpoints {
+			if displayCfg.AI.Endpoints[i].APIKey != "" {
+				displayCfg.AI.Endpoints[i].APIKey = maskString(displayCfg.AI.Endpoints[i].APIKey)
+			}
 		}
 
 		data, err := yaml.Marshal(displayCfg)

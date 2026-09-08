@@ -1,15 +1,10 @@
 package ai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/arxcruz/pr-review/pkg/config"
 )
@@ -103,40 +98,13 @@ func (g *GeminiEngine) Review(ctx context.Context, req ReviewRequest) (*ReviewRe
 		},
 	}
 
-	payload, err := json.Marshal(bodyReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode gemini request: %w", err)
-	}
-
 	cleanBase := strings.TrimRight(g.cfg.BaseURL, "/")
 	cleanModel := strings.TrimPrefix(model, "models/")
 	endpoint := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", cleanBase, cleanModel, url.QueryEscape(g.cfg.APIKey))
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create gemini http request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 15 * time.Minute}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to gemini API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read gemini response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini API returned error (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
 	var geminiResp geminiResponse
-	if err := json.Unmarshal(respBody, &geminiResp); err != nil {
-		return nil, fmt.Errorf("failed to parse gemini response: %w", err)
+	if err := doJSONPost(ctx, endpoint, nil, bodyReq, &geminiResp); err != nil {
+		return nil, fmt.Errorf("gemini: %w", err)
 	}
 
 	if geminiResp.Error != nil {

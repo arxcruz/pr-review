@@ -7,6 +7,22 @@ import (
 	"github.com/arxcruz/pr-review/pkg/config"
 )
 
+// providerDefault holds the default BaseURL and Model for a provider.
+type providerDefault struct {
+	BaseURL string
+	Model   string
+}
+
+// providerDefaults is the central defaults table for all known providers.
+var providerDefaults = map[string]providerDefault{
+	"ollama":    {BaseURL: "http://localhost:11434/v1", Model: "qwen2.5-coder:latest"},
+	"vllm":     {BaseURL: "http://localhost:8000/v1", Model: "default"},
+	"llamacpp": {BaseURL: "http://localhost:8080/v1", Model: "default"},
+	"openai":   {BaseURL: "https://api.openai.com/v1", Model: "gpt-4o"},
+	"anthropic": {BaseURL: "https://api.anthropic.com", Model: "claude-3-7-sonnet-20250219"},
+	"gemini":   {BaseURL: "https://generativelanguage.googleapis.com", Model: "gemini-2.5-flash"},
+}
+
 type Factory struct {
 	cfg *config.Config
 }
@@ -81,46 +97,46 @@ func (f *Factory) GetEngine(providerOrTargetID string) (Engine, error) {
 }
 
 func (f *Factory) engineFromTarget(t config.AITarget) Engine {
-	switch strings.ToLower(t.Provider) {
-	case "ollama":
-		return NewOllamaEngine(config.OllamaConfig{
-			BaseURL:     t.BaseURL,
-			Model:       t.Model,
-			Temperature: t.Temperature,
-		})
+	prov := strings.ToLower(t.Provider)
+
+	// Apply defaults from the central table
+	baseURL := t.BaseURL
+	model := t.Model
+	if defaults, ok := providerDefaults[prov]; ok {
+		if baseURL == "" {
+			baseURL = defaults.BaseURL
+		}
+		if model == "" {
+			model = defaults.Model
+		}
+	}
+
+	switch prov {
 	case "anthropic", "claude":
+		maxTokens := t.MaxTokens
+		if maxTokens <= 0 {
+			maxTokens = 4096
+		}
 		return NewAnthropicEngine(config.AnthropicConfig{
-			BaseURL:     t.BaseURL,
+			BaseURL:     baseURL,
 			APIKey:      t.APIKey,
-			Model:       t.Model,
+			Model:       model,
 			Temperature: t.Temperature,
-			MaxTokens:   t.MaxTokens,
+			MaxTokens:   maxTokens,
 		})
 	case "gemini", "google":
 		return NewGeminiEngine(config.GeminiConfig{
-			BaseURL:     t.BaseURL,
+			BaseURL:     baseURL,
 			APIKey:      t.APIKey,
-			Model:       t.Model,
-			Temperature: t.Temperature,
-		})
-	case "vllm":
-		return NewOpenAICompatibleEngine("vllm", config.OpenAIConfig{
-			BaseURL:     t.BaseURL,
-			APIKey:      t.APIKey,
-			Model:       t.Model,
-			Temperature: t.Temperature,
-		})
-	case "llamacpp", "llama":
-		return NewOpenAICompatibleEngine("llamacpp", config.OpenAIConfig{
-			BaseURL:     t.BaseURL,
-			Model:       t.Model,
+			Model:       model,
 			Temperature: t.Temperature,
 		})
 	default:
-		return NewOpenAICompatibleEngine(t.Provider, config.OpenAIConfig{
-			BaseURL:     t.BaseURL,
+		// All OpenAI-compatible providers: ollama, vllm, llamacpp, openai, and any unknown
+		return NewOpenAICompatibleEngine(t.Provider, config.OpenAICompatibleConfig{
+			BaseURL:     baseURL,
 			APIKey:      t.APIKey,
-			Model:       t.Model,
+			Model:       model,
 			Temperature: t.Temperature,
 		})
 	}

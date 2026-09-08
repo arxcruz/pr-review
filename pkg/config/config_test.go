@@ -13,9 +13,11 @@ func TestConfigLoadAndDefaults(t *testing.T) {
 	yamlContent := `
 default_ai_provider: anthropic
 ai:
-  anthropic:
-    model: claude-3-7-sonnet-20250219
-    api_key: test-key-123
+  endpoints:
+    - id: anthropic
+      provider: anthropic
+      model: claude-3-7-sonnet-20250219
+      api_key: test-key-123
 git:
   github:
     token: gh-token-456
@@ -44,8 +46,11 @@ projects:
 	if cfg.DefaultAIProvider != "anthropic" {
 		t.Errorf("expected default provider anthropic, got %s", cfg.DefaultAIProvider)
 	}
-	if cfg.AI.Anthropic.APIKey != "test-key-123" {
-		t.Errorf("expected api key test-key-123, got %s", cfg.AI.Anthropic.APIKey)
+	if len(cfg.AI.Endpoints) == 0 {
+		t.Fatalf("expected at least 1 endpoint, got 0")
+	}
+	if cfg.AI.Endpoints[0].APIKey != "test-key-123" {
+		t.Errorf("expected api key test-key-123, got %s", cfg.AI.Endpoints[0].APIKey)
 	}
 	if len(cfg.Projects) != 1 {
 		t.Fatalf("expected 1 project, got %d", len(cfg.Projects))
@@ -241,12 +246,48 @@ func searchSubstr(s, substr string) bool {
 	return false
 }
 
+func TestDeprecatedAIConfigDetection(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+
+	yamlContent := `
+default_ai_provider: anthropic
+ai:
+  anthropic:
+    model: claude-3-7-sonnet-20250219
+    api_key: test-key
+`
+	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	_, _, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for deprecated config format, got nil")
+	}
+
+	errMsg := err.Error()
+	if !searchSubstr(errMsg, "deprecated") {
+		t.Errorf("expected error to mention 'deprecated', got: %s", errMsg)
+	}
+	if !searchSubstr(errMsg, "ai.anthropic") {
+		t.Errorf("expected error to mention 'ai.anthropic', got: %s", errMsg)
+	}
+	if !searchSubstr(errMsg, "ai.endpoints") {
+		t.Errorf("expected error to mention 'ai.endpoints', got: %s", errMsg)
+	}
+}
+
 func TestGetAllAITargetsMultiModelsAndEndpoints(t *testing.T) {
 	cfg := DefaultConfig()
-	// Add multiple models under ollama
-	cfg.AI.Ollama.Models = []string{"qwen2.5-coder:latest", "deepseek-coder-v2:16b", "llama3.3:70b"}
-	// Add custom multi-endpoints
+	// Replace default endpoints with our test set
 	cfg.AI.Endpoints = []AIEndpointConfig{
+		{
+			ID:       "ollama",
+			Name:     "Ollama (Local AI)",
+			Provider: "ollama",
+			Models:   []string{"qwen2.5-coder:latest", "deepseek-coder-v2:16b", "llama3.3:70b"},
+		},
 		{
 			ID:       "gpu-vllm",
 			Name:     "GPU Cluster",

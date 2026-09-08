@@ -19,55 +19,52 @@ reviews_dir: "reviews"
 # You can optionally specify a custom markdown file path:
 # review_file: "review.md"
 
-# AI Providers & Endpoints
-# You can define multiple models per provider, and/or multiple endpoints/servers per provider.
+# AI Providers & Endpoints (endpoints format)
+# Configure one or more endpoints for your AI providers (Ollama, vLLM, llama.cpp, OpenAI, Anthropic, Gemini, etc.)
 ai:
-  # Method 1: Multiple models under individual providers
-  ollama:
-    base_url: "http://localhost:11434"
-    models:
-      - "qwen2.5-coder:latest"
-      - "deepseek-coder-v2:16b"
-    temperature: 0.2
-
-  vllm:
-    base_url: "http://localhost:8000/v1"
-    model: "Qwen/Qwen2.5-Coder-32B-Instruct"
-    api_key: ""
-    temperature: 0.2
-
-  anthropic:
-    base_url: "https://api.anthropic.com"
-    api_key: "${ANTHROPIC_API_KEY}"
-    models:
-      - "claude-3-7-sonnet-20250219"
-      - "claude-3-5-haiku-20241022"
-    temperature: 0.2
-    max_tokens: 4096
-
-  gemini:
-    base_url: "https://generativelanguage.googleapis.com"
-    api_key: "${GEMINI_API_KEY}"
-    model: "gemini-2.5-flash"
-    temperature: 0.2
-
-  openai:
-    base_url: "https://api.openai.com/v1"
-    api_key: "${OPENAI_API_KEY}"
-    model: "gpt-4o"
-    temperature: 0.2
-
-  # Method 2: Custom multi-endpoint / multi-server configuration
-  # Ideal when you have multiple servers running Ollama, vLLM, llama.cpp, or LM Studio
   endpoints:
-    - id: "gpu-vllm"
-      name: "Remote GPU Cluster"
-      provider: "vllm"
-      base_url: "http://192.168.1.100:8000/v1"
-      api_key: "${VLLM_API_KEY}"
+    - id: "ollama"
+      name: "Ollama (Local AI)"
+      provider: "ollama"
+      base_url: "http://localhost:11434/v1"
       models:
-        - "deepseek-ai/DeepSeek-Coder-V2-Instruct"
-        - "Qwen/Qwen2.5-Coder-32B-Instruct"
+        - "qwen2.5-coder:latest"
+        - "deepseek-coder-v2:16b"
+      temperature: 0.2
+
+    - id: "vllm"
+      name: "vLLM Server"
+      provider: "vllm"
+      base_url: "http://localhost:8000/v1"
+      model: "Qwen/Qwen2.5-Coder-32B-Instruct"
+      api_key: ""
+      temperature: 0.2
+
+    - id: "anthropic"
+      name: "Anthropic Claude"
+      provider: "anthropic"
+      base_url: "https://api.anthropic.com"
+      api_key: "${ANTHROPIC_API_KEY}"
+      models:
+        - "claude-3-7-sonnet-20250219"
+        - "claude-3-5-haiku-20241022"
+      temperature: 0.2
+      max_tokens: 4096
+
+    - id: "gemini"
+      name: "Google Gemini"
+      provider: "gemini"
+      base_url: "https://generativelanguage.googleapis.com"
+      api_key: "${GEMINI_API_KEY}"
+      model: "gemini-2.5-flash"
+      temperature: 0.2
+
+    - id: "openai"
+      name: "OpenAI"
+      provider: "openai"
+      base_url: "https://api.openai.com/v1"
+      api_key: "${OPENAI_API_KEY}"
+      model: "gpt-4o"
       temperature: 0.2
 
     - id: "local-llamacpp"

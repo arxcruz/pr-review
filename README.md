@@ -81,37 +81,44 @@ reviews_dir: "reviews"
 # review_file: "review.md"
 
 ai:
-  # Method 1: Define multiple models under standard providers
-  ollama:
-    base_url: "http://localhost:11434"
-    models:
-      - "qwen2.5-coder:latest"
-      - "deepseek-coder-v2:16b"
-      - "llama3.3:70b"
-    temperature: 0.2
-
-  vllm:
-    base_url: "http://localhost:8000/v1"
-    model: "Qwen/Qwen2.5-Coder-32B-Instruct"
-    temperature: 0.2
-
-  anthropic:
-    api_key: "${ANTHROPIC_API_KEY}"
-    models:
-      - "claude-3-7-sonnet-20250219"
-      - "claude-3-5-haiku-20241022"
-
-  gemini:
-    api_key: "${GEMINI_API_KEY}"
-    model: "gemini-2.5-flash"
-
-  openai:
-    api_key: "${OPENAI_API_KEY}"
-    model: "gpt-4o"
-
-  # Method 2: Define multiple custom endpoints / servers (many-to-many)
-  # Perfect if you have multiple servers running Ollama, vLLM, llama.cpp, or remote GPUs
   endpoints:
+    - id: "ollama"
+      name: "Ollama (Local AI)"
+      provider: "ollama"
+      base_url: "http://localhost:11434/v1"
+      models:
+        - "qwen2.5-coder:latest"
+        - "deepseek-coder-v2:16b"
+        - "llama3.3:70b"
+      temperature: 0.2
+
+    - id: "vllm"
+      name: "vLLM"
+      provider: "vllm"
+      base_url: "http://localhost:8000/v1"
+      model: "Qwen/Qwen2.5-Coder-32B-Instruct"
+      temperature: 0.2
+
+    - id: "anthropic"
+      name: "Anthropic Claude"
+      provider: "anthropic"
+      api_key: "${ANTHROPIC_API_KEY}"
+      models:
+        - "claude-3-7-sonnet-20250219"
+        - "claude-3-5-haiku-20241022"
+
+    - id: "gemini"
+      name: "Google Gemini"
+      provider: "gemini"
+      api_key: "${GEMINI_API_KEY}"
+      model: "gemini-2.5-flash"
+
+    - id: "openai"
+      name: "OpenAI"
+      provider: "openai"
+      api_key: "${OPENAI_API_KEY}"
+      model: "gpt-4o"
+
     - id: "gpu1-vllm"
       name: "GPU 1 (DeepSeek)"
       provider: "vllm"
@@ -120,22 +127,6 @@ ai:
       models:
         - "deepseek-ai/DeepSeek-Coder-V2-Instruct"
       temperature: 0.2
-
-    - id: "gpu2-vllm"
-      name: "GPU 2 (Qwen 32B)"
-      provider: "vllm"
-      base_url: "http://192.168.1.51:8000/v1"
-      models:
-        - "Qwen/Qwen2.5-Coder-32B-Instruct"
-      temperature: 0.2
-
-    - id: "remote-ollama"
-      name: "Remote Ollama Server"
-      provider: "ollama"
-      base_url: "http://192.168.1.100:11434"
-      models:
-        - "qwen2.5-coder:32b"
-        - "codellama:70b"
 
     - id: "local-llamacpp"
       name: "llama.cpp (Local Server)"

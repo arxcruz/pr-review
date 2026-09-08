@@ -83,6 +83,11 @@ func TestKeybindingsNavigation(t *testing.T) {
 func TestAIProviderSelection(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.DefaultAIProvider = "ollama"
+	// Add endpoints for anthropic and vllm so the test can select them
+	cfg.AI.Endpoints = append(cfg.AI.Endpoints,
+		config.AIEndpointConfig{ID: "anthropic", Provider: "anthropic", APIKey: "test"},
+		config.AIEndpointConfig{ID: "vllm", Provider: "vllm"},
+	)
 	svc := review.NewService(cfg)
 
 	model := NewModel(cfg, svc)
@@ -101,8 +106,8 @@ func TestAIProviderSelection(t *testing.T) {
 	if choice.ID != "anthropic" {
 		t.Errorf("expected active choice ID to be anthropic, got %s", choice.ID)
 	}
-	if choice.DisplayName != "Anthropic Claude" {
-		t.Errorf("expected DisplayName 'Anthropic Claude', got %s", choice.DisplayName)
+	if choice.DisplayName != "anthropic" {
+		t.Errorf("expected DisplayName 'anthropic', got %s", choice.DisplayName)
 	}
 
 	// Change selected provider to vllm
@@ -111,8 +116,8 @@ func TestAIProviderSelection(t *testing.T) {
 	if choice.ID != "vllm" {
 		t.Errorf("expected active choice ID to be vllm, got %s", choice.ID)
 	}
-	if choice.DisplayName != "vLLM (Local / Server)" {
-		t.Errorf("expected DisplayName 'vLLM (Local / Server)', got %s", choice.DisplayName)
+	if choice.DisplayName != "vllm" {
+		t.Errorf("expected DisplayName 'vllm', got %s", choice.DisplayName)
 	}
 
 	// Test custom endpoints in TUI model

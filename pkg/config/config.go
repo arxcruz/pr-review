@@ -35,43 +35,16 @@ type AIEndpointConfig struct {
 }
 
 type AIConfig struct {
-	Ollama    OllamaConfig       `yaml:"ollama,omitempty"`
-	LlamaCPP  LlamaCPPConfig     `yaml:"llamacpp,omitempty"`
-	VLLM      VLLMConfig         `yaml:"vllm,omitempty"`
-	OpenAI    OpenAIConfig       `yaml:"openai,omitempty"`
-	Anthropic AnthropicConfig    `yaml:"anthropic,omitempty"`
-	Gemini    GeminiConfig       `yaml:"gemini,omitempty"`
 	Endpoints []AIEndpointConfig `yaml:"endpoints,omitempty"`
 }
 
-type LlamaCPPConfig struct {
-	BaseURL     string   `yaml:"base_url"` // default "http://localhost:8080/v1"
-	Model       string   `yaml:"model"`
-	Models      []string `yaml:"models,omitempty"`
-	Temperature float64  `yaml:"temperature"`
-}
-
-type VLLMConfig struct {
-	BaseURL     string   `yaml:"base_url"` // default "http://localhost:8000/v1"
-	APIKey      string   `yaml:"api_key"`  // optional API key if vLLM requires auth
-	Model       string   `yaml:"model"`
-	Models      []string `yaml:"models,omitempty"`
-	Temperature float64  `yaml:"temperature"`
-}
-
-type OllamaConfig struct {
-	BaseURL     string   `yaml:"base_url"`
-	Model       string   `yaml:"model"`
-	Models      []string `yaml:"models,omitempty"`
-	Temperature float64  `yaml:"temperature"`
-}
-
-type OpenAIConfig struct {
-	BaseURL     string   `yaml:"base_url"`
-	APIKey      string   `yaml:"api_key"`
-	Model       string   `yaml:"model"`
-	Models      []string `yaml:"models,omitempty"`
-	Temperature float64  `yaml:"temperature"`
+// OpenAICompatibleConfig is used by providers that speak the OpenAI chat-completions wire format:
+// ollama, vllm, llamacpp, openai, and any other compatible server.
+type OpenAICompatibleConfig struct {
+	BaseURL     string  `yaml:"base_url"`
+	APIKey      string  `yaml:"api_key"`
+	Model       string  `yaml:"model"`
+	Temperature float64 `yaml:"temperature"`
 }
 
 type AnthropicConfig struct {
@@ -283,35 +256,12 @@ func DefaultConfig() *Config {
 		ReviewGuidelines:  DefaultReviewGuidelines(),
 		Keybindings:       DefaultKeybindings(),
 		AI: AIConfig{
-			Ollama: OllamaConfig{
-				BaseURL:     "http://localhost:11434",
-				Model:       "qwen2.5-coder:latest",
-				Temperature: 0.2,
-			},
-			LlamaCPP: LlamaCPPConfig{
-				BaseURL:     "http://localhost:8080/v1",
-				Model:       "default",
-				Temperature: 0.2,
-			},
-			VLLM: VLLMConfig{
-				BaseURL:     "http://localhost:8000/v1",
-				Model:       "default",
-				Temperature: 0.2,
-			},
-			OpenAI: OpenAIConfig{
-				BaseURL:     "https://api.openai.com/v1",
-				Model:       "gpt-4o",
-				Temperature: 0.2,
-			},
-			Anthropic: AnthropicConfig{
-				BaseURL:     "https://api.anthropic.com",
-				Model:       "claude-3-7-sonnet-20250219",
-				Temperature: 0.2,
-				MaxTokens:   4096,
-			},
-			Gemini: GeminiConfig{
-				Model:       "gemini-2.5-flash",
-				Temperature: 0.2,
+			Endpoints: []AIEndpointConfig{
+				{
+					ID:       "ollama",
+					Name:     "Ollama (Local AI)",
+					Provider: "ollama",
+				},
 			},
 		},
 		Git: GitConfig{
@@ -509,6 +459,11 @@ func LoadConfig(path string) (*Config, string, error) {
 		return nil, targetPath, fmt.Errorf("failed to parse yaml config %s: %w", targetPath, err)
 	}
 
+	// Detect deprecated nested provider config format and emit a hard error
+	if err := detectDeprecatedAIConfig(expandedData); err != nil {
+		return nil, targetPath, fmt.Errorf("config file %s uses a deprecated format: %w", targetPath, err)
+	}
+
 	if cfg.ReviewsDir != "" {
 		cfg.ReviewsDir = ExpandPath(cfg.ReviewsDir)
 	}
@@ -550,14 +505,20 @@ func LoadConfig(path string) (*Config, string, error) {
 	if cfg.Git.Gerrit.Password == "" {
 		cfg.Git.Gerrit.Password = os.Getenv("GERRIT_PASSWORD")
 	}
-	if cfg.AI.Anthropic.APIKey == "" {
-		cfg.AI.Anthropic.APIKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
-	if cfg.AI.Gemini.APIKey == "" {
-		cfg.AI.Gemini.APIKey = os.Getenv("GEMINI_API_KEY")
-	}
-	if cfg.AI.OpenAI.APIKey == "" {
-		cfg.AI.OpenAI.APIKey = os.Getenv("OPENAI_API_KEY")
+
+	// Inject API keys from environment into endpoints that lack them
+	for i := range cfg.AI.Endpoints {
+		if cfg.AI.Endpoints[i].APIKey != "" {
+			continue
+		}
+		switch strings.ToLower(cfg.AI.Endpoints[i].Provider) {
+		case "anthropic", "claude":
+			cfg.AI.Endpoints[i].APIKey = os.Getenv("ANTHROPIC_API_KEY")
+		case "gemini", "google":
+			cfg.AI.Endpoints[i].APIKey = os.Getenv("GEMINI_API_KEY")
+		case "openai":
+			cfg.AI.Endpoints[i].APIKey = os.Getenv("OPENAI_API_KEY")
+		}
 	}
 
 	mergeKeybindings(&cfg.Keybindings, DefaultKeybindings())
@@ -612,7 +573,6 @@ func GetAllAITargets(cfg *Config) []AITarget {
 		targets = append(targets, t)
 	}
 
-	// 1. Process custom endpoints if defined
 	for _, ep := range cfg.AI.Endpoints {
 		prov := strings.ToLower(strings.TrimSpace(ep.Provider))
 		if prov == "" {
@@ -663,170 +623,55 @@ func GetAllAITargets(cfg *Config) []AITarget {
 		}
 	}
 
-	// 2. Process top-level provider configs
-	// Ollama
-	ollamaModels := collectModels(cfg.AI.Ollama.Model, cfg.AI.Ollama.Models, "qwen2.5-coder:latest")
-	ollamaBaseURL := cfg.AI.Ollama.BaseURL
-	if ollamaBaseURL == "" {
-		ollamaBaseURL = "http://localhost:11434"
-	}
-	ollamaTemp := cfg.AI.Ollama.Temperature
-	if ollamaTemp <= 0 {
-		ollamaTemp = 0.2
-	}
-	for _, m := range ollamaModels {
-		id := "ollama"
-		if len(ollamaModels) > 1 {
-			id = "ollama:" + m
-		}
-		addTarget(AITarget{
-			ID:          id,
-			Name:        "Ollama (Local AI)",
-			Provider:    "ollama",
-			BaseURL:     ollamaBaseURL,
-			Model:       m,
-			Temperature: ollamaTemp,
-			Configured:  true,
-		})
-	}
-
-	// vLLM
-	vllmModels := collectModels(cfg.AI.VLLM.Model, cfg.AI.VLLM.Models, "default")
-	vllmBaseURL := cfg.AI.VLLM.BaseURL
-	if vllmBaseURL == "" {
-		vllmBaseURL = "http://localhost:8000/v1"
-	}
-	vllmTemp := cfg.AI.VLLM.Temperature
-	if vllmTemp <= 0 {
-		vllmTemp = 0.2
-	}
-	for _, m := range vllmModels {
-		id := "vllm"
-		if len(vllmModels) > 1 {
-			id = "vllm:" + m
-		}
-		addTarget(AITarget{
-			ID:          id,
-			Name:        "vLLM (Local / Server)",
-			Provider:    "vllm",
-			BaseURL:     vllmBaseURL,
-			APIKey:      cfg.AI.VLLM.APIKey,
-			Model:       m,
-			Temperature: vllmTemp,
-			Configured:  true,
-		})
-	}
-
-	// llama.cpp
-	llamacppModels := collectModels(cfg.AI.LlamaCPP.Model, cfg.AI.LlamaCPP.Models, "default")
-	llamacppBaseURL := cfg.AI.LlamaCPP.BaseURL
-	if llamacppBaseURL == "" {
-		llamacppBaseURL = "http://localhost:8080/v1"
-	}
-	llamacppTemp := cfg.AI.LlamaCPP.Temperature
-	if llamacppTemp <= 0 {
-		llamacppTemp = 0.2
-	}
-	for _, m := range llamacppModels {
-		id := "llamacpp"
-		if len(llamacppModels) > 1 {
-			id = "llamacpp:" + m
-		}
-		addTarget(AITarget{
-			ID:          id,
-			Name:        "llama.cpp (llama-server)",
-			Provider:    "llamacpp",
-			BaseURL:     llamacppBaseURL,
-			Model:       m,
-			Temperature: llamacppTemp,
-			Configured:  true,
-		})
-	}
-
-	// Anthropic
-	anthropicModels := collectModels(cfg.AI.Anthropic.Model, cfg.AI.Anthropic.Models, "claude-3-7-sonnet-20250219")
-	anthropicBaseURL := cfg.AI.Anthropic.BaseURL
-	if anthropicBaseURL == "" {
-		anthropicBaseURL = "https://api.anthropic.com"
-	}
-	anthropicTemp := cfg.AI.Anthropic.Temperature
-	if anthropicTemp <= 0 {
-		anthropicTemp = 0.2
-	}
-	for _, m := range anthropicModels {
-		id := "anthropic"
-		if len(anthropicModels) > 1 {
-			id = "anthropic:" + m
-		}
-		addTarget(AITarget{
-			ID:          id,
-			Name:        "Anthropic Claude",
-			Provider:    "anthropic",
-			BaseURL:     anthropicBaseURL,
-			APIKey:      cfg.AI.Anthropic.APIKey,
-			Model:       m,
-			Temperature: anthropicTemp,
-			MaxTokens:   cfg.AI.Anthropic.MaxTokens,
-			Configured:  cfg.AI.Anthropic.APIKey != "",
-		})
-	}
-
-	// Gemini
-	geminiModels := collectModels(cfg.AI.Gemini.Model, cfg.AI.Gemini.Models, "gemini-2.5-flash")
-	geminiBaseURL := cfg.AI.Gemini.BaseURL
-	if geminiBaseURL == "" {
-		geminiBaseURL = "https://generativelanguage.googleapis.com"
-	}
-	geminiTemp := cfg.AI.Gemini.Temperature
-	if geminiTemp <= 0 {
-		geminiTemp = 0.2
-	}
-	for _, m := range geminiModels {
-		id := "gemini"
-		if len(geminiModels) > 1 {
-			id = "gemini:" + m
-		}
-		addTarget(AITarget{
-			ID:          id,
-			Name:        "Google Gemini",
-			Provider:    "gemini",
-			BaseURL:     geminiBaseURL,
-			APIKey:      cfg.AI.Gemini.APIKey,
-			Model:       m,
-			Temperature: geminiTemp,
-			Configured:  cfg.AI.Gemini.APIKey != "",
-		})
-	}
-
-	// OpenAI
-	openaiModels := collectModels(cfg.AI.OpenAI.Model, cfg.AI.OpenAI.Models, "gpt-4o")
-	openaiBaseURL := cfg.AI.OpenAI.BaseURL
-	if openaiBaseURL == "" {
-		openaiBaseURL = "https://api.openai.com/v1"
-	}
-	openaiTemp := cfg.AI.OpenAI.Temperature
-	if openaiTemp <= 0 {
-		openaiTemp = 0.2
-	}
-	for _, m := range openaiModels {
-		id := "openai"
-		if len(openaiModels) > 1 {
-			id = "openai:" + m
-		}
-		isConfigured := cfg.AI.OpenAI.APIKey != "" || strings.Contains(openaiBaseURL, "localhost") || strings.Contains(openaiBaseURL, "127.0.0.1")
-		addTarget(AITarget{
-			ID:          id,
-			Name:        "OpenAI / LM Studio",
-			Provider:    "openai",
-			BaseURL:     openaiBaseURL,
-			APIKey:      cfg.AI.OpenAI.APIKey,
-			Model:       m,
-			Temperature: openaiTemp,
-			Configured:  isConfigured,
-		})
-	}
-
 	return targets
+}
+
+// detectDeprecatedAIConfig checks raw YAML data for deprecated nested provider keys
+// (ai.ollama, ai.vllm, ai.llamacpp, ai.openai, ai.anthropic, ai.gemini) and returns
+// a hard error telling the user to migrate to the ai.endpoints[] format.
+func detectDeprecatedAIConfig(data []byte) error {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil // let the main unmarshal report the error
+	}
+
+	aiRaw, ok := raw["ai"]
+	if !ok {
+		return nil
+	}
+
+	aiMap, ok := aiRaw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	deprecatedKeys := []string{"ollama", "vllm", "llamacpp", "openai", "anthropic", "gemini"}
+	var found []string
+	for _, key := range deprecatedKeys {
+		if _, exists := aiMap[key]; exists {
+			found = append(found, "ai."+key)
+		}
+	}
+
+	if len(found) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"found deprecated nested AI provider keys: %s. "+
+			"These are no longer supported. Please migrate to the ai.endpoints[] format. "+
+			"Example:\n"+
+			"  ai:\n"+
+			"    endpoints:\n"+
+			"      - id: my-ollama\n"+
+			"        provider: ollama\n"+
+			"        model: qwen2.5-coder:latest\n"+
+			"      - id: my-anthropic\n"+
+			"        provider: anthropic\n"+
+			"        api_key: ${ANTHROPIC_API_KEY}\n"+
+			"        model: claude-3-7-sonnet-20250219",
+		strings.Join(found, ", "),
+	)
 }
 
 func collectModels(single string, list []string, fallback string) []string {
@@ -875,7 +720,7 @@ func defaultModelForProvider(prov string) string {
 func DefaultBaseURLForProvider(prov string) string {
 	switch strings.ToLower(prov) {
 	case "ollama":
-		return "http://localhost:11434"
+		return "http://localhost:11434/v1"
 	case "vllm":
 		return "http://localhost:8000/v1"
 	case "llamacpp", "llama":

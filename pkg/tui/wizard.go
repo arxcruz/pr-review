@@ -634,102 +634,54 @@ func (m *WizardModel) saveConfiguration() error {
 	}
 
 	// Update Config
+	// Update Config — always use endpoints format
+	epID := ""
+	epName := ""
+	provType := p.id
+
 	if m.isCustomEndpoint {
-		epID := strings.TrimSpace(m.endpointIDInput.Value())
+		epID = strings.TrimSpace(m.endpointIDInput.Value())
 		if epID == "" {
 			epID = fmt.Sprintf("%s-endpoint", p.id)
 		}
-		epName := strings.TrimSpace(m.endpointNameInput.Value())
+		epName = strings.TrimSpace(m.endpointNameInput.Value())
 		if epName == "" {
 			epName = fmt.Sprintf("%s (%s)", p.label, primaryModel)
 		}
-
-		provType := p.id
 		if provType == "custom-openai" {
 			provType = "openai"
 		}
-
-		newEndpoint := config.AIEndpointConfig{
-			ID:          epID,
-			Name:        epName,
-			Provider:    provType,
-			BaseURL:     baseURL,
-			APIKey:      apiKey,
-			Model:       primaryModel,
-			Models:      models,
-			Temperature: temp,
-		}
-
-		// Replace or append
-		replaced := false
-		for i, ep := range m.rawConfig.AI.Endpoints {
-			if ep.ID == epID {
-				m.rawConfig.AI.Endpoints[i] = newEndpoint
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			m.rawConfig.AI.Endpoints = append(m.rawConfig.AI.Endpoints, newEndpoint)
-		}
-
-		if m.isDefault {
-			m.rawConfig.DefaultAIProvider = epID
-		}
 	} else {
-		// Standard provider
-		switch p.id {
-		case "ollama":
-			m.rawConfig.AI.Ollama = config.OllamaConfig{
-				BaseURL:     baseURL,
-				Model:       primaryModel,
-				Models:      models,
-				Temperature: temp,
-			}
-		case "vllm":
-			m.rawConfig.AI.VLLM = config.VLLMConfig{
-				BaseURL:     baseURL,
-				APIKey:      apiKey,
-				Model:       primaryModel,
-				Models:      models,
-				Temperature: temp,
-			}
-		case "llamacpp":
-			m.rawConfig.AI.LlamaCPP = config.LlamaCPPConfig{
-				BaseURL:     baseURL,
-				Model:       primaryModel,
-				Models:      models,
-				Temperature: temp,
-			}
-		case "anthropic":
-			m.rawConfig.AI.Anthropic = config.AnthropicConfig{
-				BaseURL:     baseURL,
-				APIKey:      apiKey,
-				Model:       primaryModel,
-				Models:      models,
-				Temperature: temp,
-			}
-		case "gemini":
-			m.rawConfig.AI.Gemini = config.GeminiConfig{
-				BaseURL:     baseURL,
-				APIKey:      apiKey,
-				Model:       primaryModel,
-				Models:      models,
-				Temperature: temp,
-			}
-		case "openai":
-			m.rawConfig.AI.OpenAI = config.OpenAIConfig{
-				BaseURL:     baseURL,
-				APIKey:      apiKey,
-				Model:       primaryModel,
-				Models:      models,
-				Temperature: temp,
-			}
-		}
+		epID = p.id
+		epName = p.label
+	}
 
-		if m.isDefault {
-			m.rawConfig.DefaultAIProvider = p.id
+	newEndpoint := config.AIEndpointConfig{
+		ID:          epID,
+		Name:        epName,
+		Provider:    provType,
+		BaseURL:     baseURL,
+		APIKey:      apiKey,
+		Model:       primaryModel,
+		Models:      models,
+		Temperature: temp,
+	}
+
+	// Replace or append
+	replaced := false
+	for i, ep := range m.rawConfig.AI.Endpoints {
+		if ep.ID == epID {
+			m.rawConfig.AI.Endpoints[i] = newEndpoint
+			replaced = true
+			break
 		}
+	}
+	if !replaced {
+		m.rawConfig.AI.Endpoints = append(m.rawConfig.AI.Endpoints, newEndpoint)
+	}
+
+	if m.isDefault {
+		m.rawConfig.DefaultAIProvider = epID
 	}
 
 	// Ensure dir exists
