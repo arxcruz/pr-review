@@ -48,8 +48,13 @@ func (m *Manager) FindProject(identifier string) (*config.ProjectConfig, error) 
 		if p.Provider == "github" && strings.EqualFold(fmt.Sprintf("%s/%s", p.Owner, p.Repo), cleanID) {
 			return &p, nil
 		}
-		if p.Provider == "gitlab" && strings.EqualFold(p.ProjectPath, cleanID) {
-			return &p, nil
+		if p.Provider == "gitlab" {
+			if strings.EqualFold(p.ProjectPath, cleanID) {
+				return &p, nil
+			}
+			if p.Owner != "" && p.Repo != "" && strings.EqualFold(fmt.Sprintf("%s/%s", p.Owner, p.Repo), cleanID) {
+				return &p, nil
+			}
 		}
 		if p.Provider == "gerrit" && (strings.EqualFold(p.Repo, cleanID) || strings.EqualFold(p.ProjectPath, cleanID)) {
 			return &p, nil

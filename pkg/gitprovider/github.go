@@ -34,8 +34,12 @@ func (g *GitHubProvider) getClient(ctx context.Context) (*github.Client, error) 
 
 	var client *github.Client
 	if g.cfg.BaseURL != "" {
+		baseURL := strings.TrimSpace(g.cfg.BaseURL)
+		if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+			baseURL = "https://" + baseURL
+		}
 		var err error
-		client, err = github.NewClient(httpClient).WithEnterpriseURLs(g.cfg.BaseURL, g.cfg.BaseURL)
+		client, err = github.NewClient(httpClient).WithEnterpriseURLs(baseURL, baseURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create enterprise github client: %w", err)
 		}

@@ -21,10 +21,38 @@ func (g *GitLabProvider) Name() string {
 	return "gitlab"
 }
 
+func (g *GitLabProvider) getProjectPath(project config.ProjectConfig) (string, error) {
+	if strings.TrimSpace(project.ProjectPath) != "" {
+		return strings.TrimSpace(project.ProjectPath), nil
+	}
+	if strings.TrimSpace(project.Owner) != "" && strings.TrimSpace(project.Repo) != "" {
+		return fmt.Sprintf("%s/%s", strings.TrimSpace(project.Owner), strings.TrimSpace(project.Repo)), nil
+	}
+	if strings.TrimSpace(project.Repo) != "" {
+		return strings.TrimSpace(project.Repo), nil
+	}
+	if strings.Contains(project.ID, "/") {
+		return strings.TrimSpace(project.ID), nil
+	}
+	return "", fmt.Errorf("project '%s' is missing project_path (or owner/repo) in configuration", project.ID)
+}
+
+func normalizeBaseURL(baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return ""
+	}
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		baseURL = "https://" + baseURL
+	}
+	return strings.TrimRight(baseURL, "/")
+}
+
 func (g *GitLabProvider) getClient() (*gitlab.Client, error) {
 	opts := []gitlab.ClientOptionFunc{}
-	if g.cfg.BaseURL != "" {
-		opts = append(opts, gitlab.WithBaseURL(g.cfg.BaseURL))
+	baseURL := normalizeBaseURL(g.cfg.BaseURL)
+	if baseURL != "" {
+		opts = append(opts, gitlab.WithBaseURL(baseURL))
 	}
 
 	client, err := gitlab.NewClient(g.cfg.Token, opts...)
@@ -36,6 +64,11 @@ func (g *GitLabProvider) getClient() (*gitlab.Client, error) {
 }
 
 func (g *GitLabProvider) ListPullRequests(ctx context.Context, project config.ProjectConfig, filter FilterOptions) ([]*PullRequest, error) {
+	projectPath, err := g.getProjectPath(project)
+	if err != nil {
+		return nil, err
+	}
+
 	client, err := g.getClient()
 	if err != nil {
 		return nil, err
@@ -55,9 +88,9 @@ func (g *GitLabProvider) ListPullRequests(ctx context.Context, project config.Pr
 		ListOptions: gitlab.ListOptions{PerPage: 50},
 	}
 
-	mrs, _, err := client.MergeRequests.ListProjectMergeRequests(project.ProjectPath, opts, gitlab.WithContext(ctx))
+	mrs, _, err := client.MergeRequests.ListProjectMergeRequests(projectPath, opts, gitlab.WithContext(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("gitlab API error listing MRs for %s: %w", project.ProjectPath, err)
+		return nil, fmt.Errorf("gitlab API error listing MRs for %s: %w", projectPath, err)
 	}
 
 	var results []*PullRequest
@@ -104,14 +137,19 @@ func (g *GitLabProvider) ListPullRequests(ctx context.Context, project config.Pr
 }
 
 func (g *GitLabProvider) GetPullRequest(ctx context.Context, project config.ProjectConfig, prNumber int) (*PullRequest, error) {
+	projectPath, err := g.getProjectPath(project)
+	if err != nil {
+		return nil, err
+	}
+
 	client, err := g.getClient()
 	if err != nil {
 		return nil, err
 	}
 
-	mr, _, err := client.MergeRequests.GetMergeRequest(project.ProjectPath, int64(prNumber), nil, gitlab.WithContext(ctx))
+	mr, _, err := client.MergeRequests.GetMergeRequest(projectPath, int64(prNumber), nil, gitlab.WithContext(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch MR #%d from %s: %w", prNumber, project.ProjectPath, err)
+		return nil, fmt.Errorf("failed to fetch MR #%d from %s: %w", prNumber, projectPath, err)
 	}
 
 	author := ""
@@ -144,20 +182,30 @@ func (g *GitLabProvider) GetPullRequest(ctx context.Context, project config.Proj
 }
 
 func (g *GitLabProvider) GetDiff(ctx context.Context, project config.ProjectConfig, prNumber int) (string, error) {
+	projectPath, err := g.getProjectPath(project)
+	if err != nil {
+		return "", err
+	}
+
 	client, err := g.getClient()
 	if err != nil {
 		return "", err
 	}
 
-	rawDiff, _, err := client.MergeRequests.ShowMergeRequestRawDiffs(project.ProjectPath, int64(prNumber), nil, gitlab.WithContext(ctx))
+	rawDiff, _, err := client.MergeRequests.ShowMergeRequestRawDiffs(projectPath, int64(prNumber), nil, gitlab.WithContext(ctx))
 	if err != nil {
-		return "", fmt.Errorf("failed to get diff for MR #%d in %s: %w", prNumber, project.ProjectPath, err)
+		return "", fmt.Errorf("failed to get diff for MR #%d in %s: %w", prNumber, projectPath, err)
 	}
 
 	return string(rawDiff), nil
 }
 
 func (g *GitLabProvider) PostComment(ctx context.Context, project config.ProjectConfig, prNumber int, comment string) error {
+	projectPath, err := g.getProjectPath(project)
+	if err != nil {
+		return err
+	}
+
 	client, err := g.getClient()
 	if err != nil {
 		return err
@@ -171,7 +219,7 @@ func (g *GitLabProvider) PostComment(ctx context.Context, project config.Project
 		Body: gitlab.Ptr(comment),
 	}
 
-	_, _, err = client.Notes.CreateMergeRequestNote(project.ProjectPath, int64(prNumber), opts, gitlab.WithContext(ctx))
+	_, _, err = client.Notes.CreateMergeRequestNote(projectPath, int64(prNumber), opts, gitlab.WithContext(ctx))
 	if err != nil {
 		return fmt.Errorf("failed to post note on MR #%d: %w", prNumber, err)
 	}
