@@ -487,3 +487,333 @@ func TestClient_GetRecentTickets_AuthError(t *testing.T) {
 	}
 }
 
+func TestClient_CreateEpic_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST method, got %s", r.Method)
+		}
+		if r.URL.Path != "/rest/api/2/issue" {
+			t.Errorf("expected path /rest/api/2/issue, got %s", r.URL.Path)
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer test-pat" {
+			t.Errorf("expected Authorization Bearer test-pat, got %s", authHeader)
+		}
+
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		fields, ok := payload["fields"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected fields object in payload")
+		}
+
+		proj, _ := fields["project"].(map[string]interface{})
+		if proj["key"] != "DELIV" {
+			t.Errorf("expected project DELIV, got %v", proj["key"])
+		}
+
+		if fields["summary"] != "Delivery Infrastructure Epic" {
+			t.Errorf("expected summary 'Delivery Infrastructure Epic', got %v", fields["summary"])
+		}
+
+		if fields["description"] != "Epic description for delivery team" {
+			t.Errorf("expected description 'Epic description for delivery team', got %v", fields["description"])
+		}
+
+		issueType, _ := fields["issuetype"].(map[string]interface{})
+		if issueType["name"] != "Epic" {
+			t.Errorf("expected issuetype Epic, got %v", issueType["name"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":   "10100",
+			"key":  "DELIV-10",
+			"self": "https://jira.example.com/rest/api/2/issue/10100",
+		})
+	}))
+	defer server.Close()
+
+	cfg := config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	created, err := client.CreateEpic(context.Background(), CreateEpicRequest{
+		Project:     "DELIV",
+		Summary:     "Delivery Infrastructure Epic",
+		Description: "Epic description for delivery team",
+		IssueType:   "Epic",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error creating epic: %v", err)
+	}
+
+	if created.ID != "10100" {
+		t.Errorf("expected ID 10100, got %s", created.ID)
+	}
+	if created.Key != "DELIV-10" {
+		t.Errorf("expected Key DELIV-10, got %s", created.Key)
+	}
+	if created.Self != "https://jira.example.com/rest/api/2/issue/10100" {
+		t.Errorf("expected Self https://jira.example.com/rest/api/2/issue/10100, got %s", created.Self)
+	}
+	expectedURL := server.URL + "/browse/DELIV-10"
+	if created.URL != expectedURL {
+		t.Errorf("expected URL %s, got %s", expectedURL, created.URL)
+	}
+}
+
+func TestClient_CreateTask_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST method, got %s", r.Method)
+		}
+		if r.URL.Path != "/rest/api/2/issue" {
+			t.Errorf("expected path /rest/api/2/issue, got %s", r.URL.Path)
+		}
+
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		fields, ok := payload["fields"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected fields object in payload")
+		}
+
+		proj, _ := fields["project"].(map[string]interface{})
+		if proj["key"] != "CORE" {
+			t.Errorf("expected project CORE, got %v", proj["key"])
+		}
+
+		if fields["summary"] != "Implement Database Connection Pool" {
+			t.Errorf("expected summary, got %v", fields["summary"])
+		}
+
+		desc, _ := fields["description"].(string)
+		if !strings.Contains(desc, "Initial pool implementation") {
+			t.Errorf("expected description to contain body, got: %s", desc)
+		}
+		if !strings.Contains(desc, "Acceptance Criteria:") || !strings.Contains(desc, "- Connection pool respects max limit") {
+			t.Errorf("expected description to contain acceptance criteria, got: %s", desc)
+		}
+
+		issueType, _ := fields["issuetype"].(map[string]interface{})
+		if issueType["name"] != "Task" {
+			t.Errorf("expected issuetype Task, got %v", issueType["name"])
+		}
+
+		parent, _ := fields["parent"].(map[string]interface{})
+		if parent["key"] != "DELIV-10" {
+			t.Errorf("expected parent key DELIV-10, got %v", parent["key"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":   "10101",
+			"key":  "CORE-55",
+			"self": "https://jira.example.com/rest/api/2/issue/10101",
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	created, err := client.CreateTask(context.Background(), CreateTaskRequest{
+		Project:     "CORE",
+		Summary:     "Implement Database Connection Pool",
+		Description: "Initial pool implementation",
+		ParentKey:   "DELIV-10",
+		AcceptanceCriteria: []string{
+			"Connection pool respects max limit",
+			"Idle connections timeout after 30 seconds",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error creating task: %v", err)
+	}
+
+	if created.ID != "10101" {
+		t.Errorf("expected ID 10101, got %s", created.ID)
+	}
+	if created.Key != "CORE-55" {
+		t.Errorf("expected Key CORE-55, got %s", created.Key)
+	}
+	if created.Self != "https://jira.example.com/rest/api/2/issue/10101" {
+		t.Errorf("expected Self https://jira.example.com/rest/api/2/issue/10101, got %s", created.Self)
+	}
+	expectedURL := server.URL + "/browse/CORE-55"
+	if created.URL != expectedURL {
+		t.Errorf("expected URL %s, got %s", expectedURL, created.URL)
+	}
+}
+
+func TestClient_CreateTask_Story(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		fields := payload["fields"].(map[string]interface{})
+
+		issueType, _ := fields["issuetype"].(map[string]interface{})
+		if issueType["name"] != "Story" {
+			t.Errorf("expected issuetype Story, got %v", issueType["name"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":   "10102",
+			"key":  "WEB-42",
+			"self": "https://jira.example.com/rest/api/2/issue/10102",
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	created, err := client.CreateTask(context.Background(), CreateTaskRequest{
+		Project:   "WEB",
+		Summary:   "Add login button",
+		IssueType: "Story",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error creating story: %v", err)
+	}
+
+	if created.Key != "WEB-42" {
+		t.Errorf("expected Key WEB-42, got %s", created.Key)
+	}
+}
+
+func TestClient_CreateIssue_ValidationErrors(t *testing.T) {
+	client, err := NewClient(config.JiraConfig{
+		URL: "https://jira.example.com",
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Missing project
+	_, err = client.CreateIssue(ctx, CreateIssueRequest{
+		Project:   "",
+		Summary:   "Some summary",
+		IssueType: "Task",
+	})
+	if err == nil || !strings.Contains(err.Error(), "project is required") {
+		t.Errorf("expected 'project is required' error, got: %v", err)
+	}
+
+	// Missing summary
+	_, err = client.CreateIssue(ctx, CreateIssueRequest{
+		Project:   "DELIV",
+		Summary:   "   ",
+		IssueType: "Task",
+	})
+	if err == nil || !strings.Contains(err.Error(), "summary is required") {
+		t.Errorf("expected 'summary is required' error, got: %v", err)
+	}
+
+	// Missing issue type
+	_, err = client.CreateIssue(ctx, CreateIssueRequest{
+		Project:   "DELIV",
+		Summary:   "Some summary",
+		IssueType: "",
+	})
+	if err == nil || !strings.Contains(err.Error(), "issue type is required") {
+		t.Errorf("expected 'issue type is required' error, got: %v", err)
+	}
+}
+
+func TestClient_CreateIssue_HTTP400(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"errorMessages": []string{"Project DELIV does not exist"},
+			"errors": map[string]string{
+				"summary": "Summary is too long",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	_, err = client.CreateIssue(context.Background(), CreateIssueRequest{
+		Project:   "DELIV",
+		Summary:   "Invalid summary",
+		IssueType: "Task",
+	})
+	if err == nil {
+		t.Fatal("expected error on HTTP 400, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 400") || !strings.Contains(err.Error(), "Project DELIV does not exist") {
+		t.Errorf("unexpected error format: %v", err)
+	}
+}
+
+func TestClient_CreateIssue_HTTP401(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"errorMessages": []string{"Unauthorized token"},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	_, err = client.CreateIssue(context.Background(), CreateIssueRequest{
+		Project:   "DELIV",
+		Summary:   "Some summary",
+		IssueType: "Task",
+	})
+	if err == nil {
+		t.Fatal("expected error on HTTP 401, got nil")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") || !strings.Contains(err.Error(), "Unauthorized token") {
+		t.Errorf("unexpected error format: %v", err)
+	}
+}
+

@@ -37,3 +37,42 @@ type RecentTicket struct {
 	Assignee string `json:"assignee"`
 }
 
+// CreateIssueRequest represents parameters to create any Jira issue.
+type CreateIssueRequest struct {
+	Project            string                 `json:"project"`
+	Summary            string                 `json:"summary"`
+	Description        string                 `json:"description,omitempty"`
+	IssueType          string                 `json:"issue_type"`
+	ParentKey          string                 `json:"parent_key,omitempty"`
+	AcceptanceCriteria []string               `json:"acceptance_criteria,omitempty"`
+	CustomFields       map[string]interface{} `json:"custom_fields,omitempty"`
+}
+
+// CreateEpicRequest represents parameters to create an Epic issue.
+type CreateEpicRequest struct {
+	Project      string                 `json:"project"`
+	Summary      string                 `json:"summary"`
+	Description  string                 `json:"description,omitempty"`
+	IssueType    string                 `json:"issue_type,omitempty"`
+	CustomFields map[string]interface{} `json:"custom_fields,omitempty"`
+}
+
+// CreateTaskRequest represents parameters to create a Task or Story issue.
+type CreateTaskRequest struct {
+	Project            string                 `json:"project"`
+	Summary            string                 `json:"summary"`
+	Description        string                 `json:"description,omitempty"`
+	IssueType          string                 `json:"issue_type,omitempty"`
+	ParentKey          string                 `json:"parent_key,omitempty"`
+	AcceptanceCriteria []string               `json:"acceptance_criteria,omitempty"`
+	CustomFields       map[string]interface{} `json:"custom_fields,omitempty"`
+}
+
+// CreatedIssue represents the outcome of a Jira issue creation.
+type CreatedIssue struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Self string `json:"self"`
+	URL  string `json:"url"`
+}
+

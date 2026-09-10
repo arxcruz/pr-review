@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -18,6 +19,9 @@ import (
 type Client interface {
 	GetTicket(ctx context.Context, key string) (*Ticket, error)
 	GetRecentTickets(ctx context.Context, project string) ([]RecentTicket, error)
+	CreateIssue(ctx context.Context, req CreateIssueRequest) (*CreatedIssue, error)
+	CreateEpic(ctx context.Context, req CreateEpicRequest) (*CreatedIssue, error)
+	CreateTask(ctx context.Context, req CreateTaskRequest) (*CreatedIssue, error)
 }
 
 // HTTPClient is the concrete implementation of Client talking to Jira REST API.
@@ -391,6 +395,171 @@ func (c *HTTPClient) GetRecentTickets(ctx context.Context, project string) ([]Re
 	}
 
 	return tickets, nil
+}
+
+// CreateIssue creates an issue in Jira via POST /rest/api/2/issue.
+func (c *HTTPClient) CreateIssue(ctx context.Context, req CreateIssueRequest) (*CreatedIssue, error) {
+	project := strings.TrimSpace(req.Project)
+	if project == "" {
+		return nil, fmt.Errorf("project is required")
+	}
+	summary := strings.TrimSpace(req.Summary)
+	if summary == "" {
+		return nil, fmt.Errorf("summary is required")
+	}
+	issueType := strings.TrimSpace(req.IssueType)
+	if issueType == "" {
+		return nil, fmt.Errorf("issue type is required")
+	}
+
+	fields := map[string]interface{}{
+		"project": map[string]interface{}{
+			"key": project,
+		},
+		"summary": summary,
+		"issuetype": map[string]interface{}{
+			"name": issueType,
+		},
+	}
+
+	description := req.Description
+	if len(req.AcceptanceCriteria) > 0 {
+		var acBuilder strings.Builder
+		if strings.TrimSpace(description) != "" {
+			acBuilder.WriteString(strings.TrimSpace(description))
+			acBuilder.WriteString("\n\n")
+		}
+		acBuilder.WriteString("Acceptance Criteria:\n")
+		for _, ac := range req.AcceptanceCriteria {
+			acBuilder.WriteString(fmt.Sprintf("- %s\n", ac))
+		}
+		description = acBuilder.String()
+	}
+
+	if strings.TrimSpace(description) != "" {
+		fields["description"] = strings.TrimSpace(description)
+	}
+
+	if req.ParentKey != "" {
+		fields["parent"] = map[string]interface{}{
+			"key": strings.TrimSpace(req.ParentKey),
+		}
+	}
+
+	for k, v := range req.CustomFields {
+		fields[k] = v
+	}
+
+	payload := map[string]interface{}{
+		"fields": fields,
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode request payload: %w", err)
+	}
+
+	reqURL := fmt.Sprintf("%s/rest/api/2/issue", c.baseURL)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to build request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	if c.authHeader != "" {
+		httpReq.Header.Set("Authorization", c.authHeader)
+	}
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("jira connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusBadRequest {
+		errDetail := c.parseErrorMessage(respBytes)
+		if errDetail != "" {
+			return nil, fmt.Errorf("invalid jira issue request (HTTP 400): %s", errDetail)
+		}
+		return nil, fmt.Errorf("invalid jira issue request (HTTP 400)")
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		errDetail := c.parseErrorMessage(respBytes)
+		if errDetail != "" {
+			return nil, fmt.Errorf("jira authentication failed (HTTP %d): %s", resp.StatusCode, errDetail)
+		}
+		return nil, fmt.Errorf("jira authentication failed (HTTP %d): check configured token or pat for %s", resp.StatusCode, c.baseURL)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errDetail := c.parseErrorMessage(respBytes)
+		if errDetail != "" {
+			return nil, fmt.Errorf("jira issue creation failed (HTTP %d): %s", resp.StatusCode, errDetail)
+		}
+		return nil, fmt.Errorf("jira issue creation failed (HTTP %d)", resp.StatusCode)
+	}
+
+	var issueResp struct {
+		ID   string `json:"id"`
+		Key  string `json:"key"`
+		Self string `json:"self"`
+	}
+	if err := json.Unmarshal(respBytes, &issueResp); err != nil {
+		return nil, fmt.Errorf("failed to decode jira response: %w", err)
+	}
+
+	url := issueResp.Self
+	if c.baseURL != "" && issueResp.Key != "" {
+		url = fmt.Sprintf("%s/browse/%s", c.baseURL, issueResp.Key)
+	}
+
+	return &CreatedIssue{
+		ID:   issueResp.ID,
+		Key:  issueResp.Key,
+		Self: issueResp.Self,
+		URL:  url,
+	}, nil
+}
+
+// CreateEpic creates an Epic in a project.
+func (c *HTTPClient) CreateEpic(ctx context.Context, req CreateEpicRequest) (*CreatedIssue, error) {
+	issueType := req.IssueType
+	if strings.TrimSpace(issueType) == "" {
+		issueType = "Epic"
+	}
+
+	return c.CreateIssue(ctx, CreateIssueRequest{
+		Project:      req.Project,
+		Summary:      req.Summary,
+		Description:  req.Description,
+		IssueType:    issueType,
+		CustomFields: req.CustomFields,
+	})
+}
+
+// CreateTask creates a Task or Story in a project.
+func (c *HTTPClient) CreateTask(ctx context.Context, req CreateTaskRequest) (*CreatedIssue, error) {
+	issueType := req.IssueType
+	if strings.TrimSpace(issueType) == "" {
+		issueType = "Task"
+	}
+
+	return c.CreateIssue(ctx, CreateIssueRequest{
+		Project:            req.Project,
+		Summary:            req.Summary,
+		Description:        req.Description,
+		IssueType:          issueType,
+		ParentKey:          req.ParentKey,
+		AcceptanceCriteria: req.AcceptanceCriteria,
+		CustomFields:       req.CustomFields,
+	})
 }
 
 func (c *HTTPClient) parseErrorMessage(body []byte) string {
