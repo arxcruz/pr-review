@@ -61,6 +61,25 @@ type anthropicResponse struct {
 }
 
 func (a *AnthropicEngine) Review(ctx context.Context, req ReviewRequest) (*ReviewResult, error) {
+	sysPrompt, userPrompt := BuildReviewPrompt(req)
+	genRes, err := a.Generate(ctx, PromptRequest{
+		SystemPrompt: sysPrompt,
+		UserPrompt:   userPrompt,
+		Model:        req.Model,
+		Temperature:  req.Temperature,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ReviewResult{
+		Provider:   genRes.Provider,
+		Model:      genRes.Model,
+		Content:    genRes.Content,
+		TokensUsed: genRes.TokensUsed,
+	}, nil
+}
+
+func (a *AnthropicEngine) Generate(ctx context.Context, req PromptRequest) (*GenerateResult, error) {
 	if a.cfg.APIKey == "" {
 		return nil, fmt.Errorf("anthropic API key is missing. Set it in config.yaml or ANTHROPIC_API_KEY environment variable")
 	}
@@ -75,15 +94,13 @@ func (a *AnthropicEngine) Review(ctx context.Context, req ReviewRequest) (*Revie
 		temp = req.Temperature
 	}
 
-	sysPrompt, userPrompt := BuildReviewPrompt(req)
-
 	bodyReq := anthropicMessageRequest{
 		Model:       model,
 		MaxTokens:   a.cfg.MaxTokens,
-		System:      sysPrompt,
+		System:      req.SystemPrompt,
 		Temperature: temp,
 		Messages: []anthropicMessage{
-			{Role: "user", Content: userPrompt},
+			{Role: "user", Content: req.UserPrompt},
 		},
 	}
 
@@ -110,10 +127,11 @@ func (a *AnthropicEngine) Review(ctx context.Context, req ReviewRequest) (*Revie
 		}
 	}
 
-	return &ReviewResult{
+	return &GenerateResult{
 		Provider:   "anthropic",
 		Model:      model,
 		Content:    strings.TrimSpace(sb.String()),
 		TokensUsed: anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens,
 	}, nil
 }
+

@@ -61,3 +61,20 @@ type Snapshot struct {
 	CurrentFrontier []Question         `json:"current_frontier,omitempty"`
 	Tree            *DecompositionTree `json:"tree,omitempty"`
 }
+
+// AdvanceRound archives current frontier questions into a completed Round and clears CurrentFrontier.
+func (s *Snapshot) AdvanceRound() {
+	if s == nil || len(s.CurrentFrontier) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	round := Round{
+		Number:     len(s.Rounds) + 1,
+		Questions:  s.CurrentFrontier,
+		AnsweredAt: &now,
+	}
+	s.Rounds = append(s.Rounds, round)
+	s.CurrentFrontier = nil
+	s.UpdatedAt = now
+}
+

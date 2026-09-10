@@ -65,6 +65,25 @@ type geminiResponse struct {
 }
 
 func (g *GeminiEngine) Review(ctx context.Context, req ReviewRequest) (*ReviewResult, error) {
+	sysPrompt, userPrompt := BuildReviewPrompt(req)
+	genRes, err := g.Generate(ctx, PromptRequest{
+		SystemPrompt: sysPrompt,
+		UserPrompt:   userPrompt,
+		Model:        req.Model,
+		Temperature:  req.Temperature,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ReviewResult{
+		Provider:   genRes.Provider,
+		Model:      genRes.Model,
+		Content:    genRes.Content,
+		TokensUsed: genRes.TokensUsed,
+	}, nil
+}
+
+func (g *GeminiEngine) Generate(ctx context.Context, req PromptRequest) (*GenerateResult, error) {
 	if g.cfg.APIKey == "" {
 		return nil, fmt.Errorf("gemini API key is missing. Set it in config.yaml or GEMINI_API_KEY environment variable")
 	}
@@ -79,16 +98,11 @@ func (g *GeminiEngine) Review(ctx context.Context, req ReviewRequest) (*ReviewRe
 		temp = req.Temperature
 	}
 
-	sysPrompt, userPrompt := BuildReviewPrompt(req)
-
 	bodyReq := geminiRequest{
-		SystemInstruction: &geminiContent{
-			Parts: []geminiPart{{Text: sysPrompt}},
-		},
 		Contents: []geminiContent{
 			{
 				Role:  "user",
-				Parts: []geminiPart{{Text: userPrompt}},
+				Parts: []geminiPart{{Text: req.UserPrompt}},
 			},
 		},
 		GenerationConfig: &struct {
@@ -96,6 +110,12 @@ func (g *GeminiEngine) Review(ctx context.Context, req ReviewRequest) (*ReviewRe
 		}{
 			Temperature: temp,
 		},
+	}
+
+	if req.SystemPrompt != "" {
+		bodyReq.SystemInstruction = &geminiContent{
+			Parts: []geminiPart{{Text: req.SystemPrompt}},
+		}
 	}
 
 	cleanBase := strings.TrimRight(g.cfg.BaseURL, "/")
@@ -125,10 +145,11 @@ func (g *GeminiEngine) Review(ctx context.Context, req ReviewRequest) (*ReviewRe
 		tokens = geminiResp.UsageMetadata.TotalTokenCount
 	}
 
-	return &ReviewResult{
+	return &GenerateResult{
 		Provider:   "gemini",
 		Model:      model,
 		Content:    strings.TrimSpace(sb.String()),
 		TokensUsed: tokens,
 	}, nil
 }
+

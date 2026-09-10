@@ -26,8 +26,26 @@ type ReviewResult struct {
 	TokensUsed  int    `json:"tokens_used,omitempty"`
 }
 
-// Engine represents an AI provider capable of reviewing code
+// PromptRequest encapsulates generic prompt inputs for AI generation
+type PromptRequest struct {
+	SystemPrompt string  `json:"system_prompt,omitempty"`
+	UserPrompt   string  `json:"user_prompt"`
+	Model        string  `json:"model,omitempty"`
+	Temperature  float64 `json:"temperature,omitempty"`
+}
+
+// GenerateResult encapsulates the output of an AI generation
+type GenerateResult struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	Content    string `json:"content"`
+	TokensUsed int    `json:"tokens_used,omitempty"`
+}
+
+// Engine represents an AI provider capable of reviewing code or generating text
 type Engine interface {
 	Name() string
 	Review(ctx context.Context, req ReviewRequest) (*ReviewResult, error)
+	Generate(ctx context.Context, req PromptRequest) (*GenerateResult, error)
 }
+

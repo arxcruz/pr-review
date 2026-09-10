@@ -61,6 +61,25 @@ type openAIChatResponse struct {
 }
 
 func (o *OpenAICompatibleEngine) Review(ctx context.Context, req ReviewRequest) (*ReviewResult, error) {
+	sysPrompt, userPrompt := BuildReviewPrompt(req)
+	genRes, err := o.Generate(ctx, PromptRequest{
+		SystemPrompt: sysPrompt,
+		UserPrompt:   userPrompt,
+		Model:        req.Model,
+		Temperature:  req.Temperature,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ReviewResult{
+		Provider:   genRes.Provider,
+		Model:      genRes.Model,
+		Content:    genRes.Content,
+		TokensUsed: genRes.TokensUsed,
+	}, nil
+}
+
+func (o *OpenAICompatibleEngine) Generate(ctx context.Context, req PromptRequest) (*GenerateResult, error) {
 	model := o.cfg.Model
 	if req.Model != "" {
 		model = req.Model
@@ -71,15 +90,16 @@ func (o *OpenAICompatibleEngine) Review(ctx context.Context, req ReviewRequest) 
 		temp = req.Temperature
 	}
 
-	sysPrompt, userPrompt := BuildReviewPrompt(req)
+	var messages []openAIChatMessage
+	if req.SystemPrompt != "" {
+		messages = append(messages, openAIChatMessage{Role: "system", Content: req.SystemPrompt})
+	}
+	messages = append(messages, openAIChatMessage{Role: "user", Content: req.UserPrompt})
 
 	bodyReq := openAIChatRequest{
 		Model:       model,
 		Temperature: temp,
-		Messages: []openAIChatMessage{
-			{Role: "system", Content: sysPrompt},
-			{Role: "user", Content: userPrompt},
-		},
+		Messages:    messages,
 	}
 
 	endpoint := strings.TrimRight(o.cfg.BaseURL, "/")
@@ -105,10 +125,11 @@ func (o *OpenAICompatibleEngine) Review(ctx context.Context, req ReviewRequest) 
 		return nil, fmt.Errorf("%s returned empty choices", o.Name())
 	}
 
-	return &ReviewResult{
+	return &GenerateResult{
 		Provider:   o.Name(),
 		Model:      model,
 		Content:    strings.TrimSpace(chatResp.Choices[0].Message.Content),
 		TokensUsed: chatResp.Usage.TotalTokens,
 	}, nil
 }
+
