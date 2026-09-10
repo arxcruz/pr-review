@@ -293,29 +293,48 @@ func (c *HTTPClient) GetRecentTickets(ctx context.Context, project string) ([]Re
 	params.Set("fields", "key,summary,status,assignee")
 	params.Set("maxResults", "50")
 
-	reqURL := fmt.Sprintf("%s/rest/api/2/search?%s", c.baseURL, params.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build request: %w", err)
+	searchEndpoints := []string{"/rest/api/3/search/jql", "/rest/api/2/search"}
+	if !strings.Contains(c.baseURL, "atlassian.net") {
+		searchEndpoints = []string{"/rest/api/2/search", "/rest/api/3/search/jql"}
 	}
 
-	req.Header.Set("Accept", "application/json")
-	if c.authHeader != "" {
-		req.Header.Set("Authorization", c.authHeader)
+	var (
+		bodyBytes  []byte
+		statusCode int
+	)
+
+	for i, endpoint := range searchEndpoints {
+		reqURL := fmt.Sprintf("%s%s?%s", c.baseURL, endpoint, params.Encode())
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build request: %w", err)
+		}
+
+		req.Header.Set("Accept", "application/json")
+		if c.authHeader != "" {
+			req.Header.Set("Authorization", c.authHeader)
+		}
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("jira connection failed: %w", err)
+		}
+
+		bodyBytes, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		statusCode = resp.StatusCode
+		// If endpoint is gone (410) or not found (404), try next search endpoint
+		if (statusCode == http.StatusGone || statusCode == http.StatusNotFound) && i < len(searchEndpoints)-1 {
+			continue
+		}
+		break
 	}
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("jira connection failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	if resp.StatusCode == http.StatusBadRequest {
+	if statusCode == http.StatusBadRequest {
 		errDetail := c.parseErrorMessage(bodyBytes)
 		if errDetail != "" {
 			return nil, fmt.Errorf("invalid jira search query (HTTP 400): %s", errDetail)
@@ -323,15 +342,15 @@ func (c *HTTPClient) GetRecentTickets(ctx context.Context, project string) ([]Re
 		return nil, fmt.Errorf("invalid jira search query (HTTP 400)")
 	}
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
 		errDetail := c.parseErrorMessage(bodyBytes)
 		if errDetail != "" {
-			return nil, fmt.Errorf("jira authentication failed (HTTP %d): %s", resp.StatusCode, errDetail)
+			return nil, fmt.Errorf("jira authentication failed (HTTP %d): %s", statusCode, errDetail)
 		}
-		return nil, fmt.Errorf("jira authentication failed (HTTP %d): check configured token or pat for %s", resp.StatusCode, c.baseURL)
+		return nil, fmt.Errorf("jira authentication failed (HTTP %d): check configured token or pat for %s", statusCode, c.baseURL)
 	}
 
-	if resp.StatusCode == http.StatusNotFound {
+	if statusCode == http.StatusNotFound {
 		errDetail := c.parseErrorMessage(bodyBytes)
 		if errDetail != "" {
 			return nil, fmt.Errorf("jira resource not found (HTTP 404): %s", errDetail)
@@ -339,12 +358,12 @@ func (c *HTTPClient) GetRecentTickets(ctx context.Context, project string) ([]Re
 		return nil, fmt.Errorf("jira resource not found (HTTP 404)")
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if statusCode < 200 || statusCode >= 300 {
 		errDetail := c.parseErrorMessage(bodyBytes)
 		if errDetail != "" {
-			return nil, fmt.Errorf("jira API request failed (HTTP %d): %s", resp.StatusCode, errDetail)
+			return nil, fmt.Errorf("jira API request failed (HTTP %d): %s", statusCode, errDetail)
 		}
-		return nil, fmt.Errorf("jira API request failed (HTTP %d)", resp.StatusCode)
+		return nil, fmt.Errorf("jira API request failed (HTTP %d)", statusCode)
 	}
 
 	var searchResp jiraSearchResponse
