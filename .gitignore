@@ -18,7 +18,6 @@ reviews/
 ci-framework-*.md
 
 # Editor and OS metadata
-.scratch/
 .DS_Store
 .idea/
 .vscode/
