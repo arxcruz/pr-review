@@ -315,8 +315,10 @@ func TestRootCmd_InteractiveRefine_Success(t *testing.T) {
 		var content string
 		if callCount == 0 {
 			content = `[{"id":"Q1","title":"Storage Choice","options":["Postgres","Mongo"],"recommendation":"Postgres"}]`
-		} else {
+		} else if callCount == 1 {
 			content = `[]`
+		} else {
+			content = `{"epics":[{"id":"EPIC-1","title":"Storage Epic","tasks":[{"id":"TASK-1","title":"Setup Postgres"}]}]}`
 		}
 		callCount++
 		resp := map[string]interface{}{
@@ -426,14 +428,22 @@ func TestRootCmd_InteractiveRefine_ResumeExisting(t *testing.T) {
 	snapData, _ := json.MarshalIndent(existingSnap, "", "  ")
 	_ = os.WriteFile(filepath.Join(sessionDir, "STRAT-50.json"), snapData, 0644)
 
+	resumeCallCount := 0
 	aiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		var content string
+		if resumeCallCount == 0 {
+			content = "[]"
+		} else {
+			content = `{"epics":[{"id":"EPIC-1","title":"Metrics Epic","tasks":[{"id":"TASK-1","title":"Setup Prometheus"}]}]}`
+		}
+		resumeCallCount++
 		resp := map[string]interface{}{
 			"choices": []map[string]interface{}{
 				{
 					"message": map[string]interface{}{
 						"role":    "assistant",
-						"content": "[]",
+						"content": content,
 					},
 				},
 			},

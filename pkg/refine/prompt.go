@@ -54,7 +54,69 @@ Each question object must follow this exact structure:
 If all critical architectural questions and ambiguities have already been addressed and the ticket is ready for decomposition into Epics and Tasks, respond with an empty JSON array: []`, effectiveGuidelines)
 
 	var sb strings.Builder
+	formatTicketPromptContext(&sb, ticket, rounds, docContext, guidelines)
+	sb.WriteString("\nPlease formulate the next batch of frontier questions as a JSON array (or [] if complete).")
 
+	return systemPrompt, sb.String()
+}
+
+// BuildDecompositionPrompt constructs system and user prompts to synthesize settled refinement
+// rounds and architectural context into a full Decomposition Tree JSON payload.
+func BuildDecompositionPrompt(ticket jira.Ticket, rounds []session.Round, docContext string, guidelines string) (string, string) {
+	effectiveGuidelines := strings.TrimSpace(guidelines)
+	if effectiveGuidelines == "" {
+		effectiveGuidelines = defaultGuidelines
+	}
+
+	systemPrompt := fmt.Sprintf(`You are an expert principal software architect and technical lead.
+Your task is to synthesize the provided Strategic Ticket, architectural documentation, refinement guidelines, and the settled answers from interactive refinement rounds into a comprehensive Decomposition Tree of Epics and Tasks/Stories.
+
+Decomposition Rules:
+1. Break down the initiative into coherent, delivery-sized Epics.
+2. Under each Epic, create concrete Stories or Tasks with clear titles and technical descriptions.
+3. Every task MUST have explicit, verifiable acceptance criteria (acceptance_criteria list).
+4. Identify dependency relationships between tasks (depends_on list containing prerequisite task IDs). Dependencies must be an acyclic directed graph (no circular dependencies).
+5. All task and epic IDs must be unique (e.g. EPIC-1, TASK-1, TASK-2, etc.).
+6. Target Delivery Projects may be left empty or suggested if obvious from the context.
+
+Guidelines:
+%s
+
+Output Format:
+You MUST respond with a valid JSON object matching the Decomposition Tree schema below. Do not include markdown conversational prose outside the JSON.
+{
+  "epics": [
+    {
+      "id": "EPIC-1",
+      "title": "Short title of epic",
+      "description": "Detailed description of epic scope and purpose",
+      "delivery_project": "",
+      "tasks": [
+        {
+          "id": "TASK-1",
+          "title": "Short task title",
+          "description": "Technical implementation instructions",
+          "type": "Story",
+          "acceptance_criteria": [
+            "Acceptance criterion 1",
+            "Acceptance criterion 2"
+          ],
+          "delivery_project": "",
+          "depends_on": []
+        }
+      ]
+    }
+  ]
+}`, effectiveGuidelines)
+
+	var sb strings.Builder
+	formatTicketPromptContext(&sb, ticket, rounds, docContext, guidelines)
+	sb.WriteString("\nPlease synthesize the settled requirements, ticket specifications, and architectural context into a complete Decomposition Tree matching the JSON schema.")
+
+	return systemPrompt, sb.String()
+}
+
+func formatTicketPromptContext(sb *strings.Builder, ticket jira.Ticket, rounds []session.Round, docContext string, guidelines string) {
 	sb.WriteString("## Strategic Ticket Details\n")
 	sb.WriteString(fmt.Sprintf("- **Key**: %s\n", ticket.Key))
 	sb.WriteString(fmt.Sprintf("- **Summary**: %s\n", ticket.Summary))
@@ -107,7 +169,6 @@ If all critical architectural questions and ambiguities have already been addres
 		sb.WriteString("\n")
 	}
 
-
 	if len(rounds) > 0 {
 		sb.WriteString("\n## Previous Refinement Rounds & User Answers\n")
 		for _, r := range rounds {
@@ -128,8 +189,4 @@ If all critical architectural questions and ambiguities have already been addres
 			}
 		}
 	}
-
-	sb.WriteString("\nPlease formulate the next batch of frontier questions as a JSON array (or [] if complete).")
-
-	return systemPrompt, sb.String()
 }

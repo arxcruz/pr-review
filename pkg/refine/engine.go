@@ -17,6 +17,15 @@ type FrontierOptions struct {
 	Temperature float64
 }
 
+// DecompositionOptions defines tuning parameters for decomposition tree generation.
+type DecompositionOptions struct {
+	DocContext  string
+	Guidelines  string
+	Model       string
+	Temperature float64
+	MaxRetries  int
+}
+
 // Engine drives the interactive ticket refinement process using AI.
 type Engine struct {
 	aiEngine ai.Engine
@@ -67,4 +76,49 @@ func AdvanceRound(snap *session.Snapshot) {
 	if snap != nil {
 		snap.AdvanceRound()
 	}
+}
+
+// GenerateDecompositionTree prompts the AI engine to synthesize settled refinement rounds
+// into a validated Decomposition Tree, retrying if the response is malformed JSON or invalid schema,
+// and persists the resulting tree into the session snapshot.
+func (e *Engine) GenerateDecompositionTree(ctx context.Context, snap *session.Snapshot, opts DecompositionOptions) (*session.DecompositionTree, error) {
+	if snap == nil {
+		return nil, fmt.Errorf("session snapshot is required")
+	}
+
+	maxRetries := opts.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 2
+	}
+
+	sysPrompt, baseUserPrompt := BuildDecompositionPrompt(snap.Ticket, snap.Rounds, opts.DocContext, opts.Guidelines)
+	currentUserPrompt := baseUserPrompt
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		genRes, err := e.aiEngine.Generate(ctx, ai.PromptRequest{
+			SystemPrompt: sysPrompt,
+			UserPrompt:   currentUserPrompt,
+			Model:        opts.Model,
+			Temperature:  opts.Temperature,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed generating decomposition tree via %s: %w", e.aiEngine.Name(), err)
+		}
+
+		tree, parseErr := ParseDecompositionTree(genRes.Content)
+		if parseErr == nil {
+			now := time.Now().UTC()
+			snap.Tree = tree
+			snap.UpdatedAt = now
+			return tree, nil
+		}
+
+		lastErr = parseErr
+		if attempt < maxRetries {
+			currentUserPrompt = fmt.Sprintf("%s\n\n### RETRY FEEDBACK\nYour previous response failed validation: %s\nPlease regenerate the decomposition tree adhering strictly to valid JSON and schema requirements.", baseUserPrompt, parseErr.Error())
+		}
+	}
+
+	return nil, fmt.Errorf("failed to generate valid decomposition tree after %d retries: %w", maxRetries, lastErr)
 }

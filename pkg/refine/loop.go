@@ -121,6 +121,20 @@ func (l *SessionLoop) Run(ctx context.Context) error {
 			}
 
 			// Default: finalize
+			if l.snapshot.Tree == nil {
+				fmt.Fprintf(l.out, "\nSynthesizing Decomposition Tree from settled refinement rounds...\n")
+				tree, err := l.engine.GenerateDecompositionTree(ctx, l.snapshot, DecompositionOptions{
+					DocContext:  l.opts.DocContext,
+					Guidelines:  l.opts.Guidelines,
+					Model:       l.opts.Model,
+					Temperature: l.opts.Temperature,
+				})
+				if err != nil {
+					return fmt.Errorf("failed to generate decomposition tree: %w", err)
+				}
+				fmt.Fprintf(l.out, "Decomposition Tree generated: %d epics created.\n", len(tree.Epics))
+			}
+
 			l.snapshot.Status = session.StatusFinalized
 			if err := l.saveSnapshot(); err != nil {
 				return fmt.Errorf("failed to save finalized snapshot: %w", err)

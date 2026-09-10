@@ -31,6 +31,7 @@ type DecompositionTask struct {
 	Key                string   `json:"key,omitempty"`
 	Title              string   `json:"title"`
 	Description        string   `json:"description,omitempty"`
+	Type               string   `json:"type,omitempty"`
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
 	DeliveryProject    string   `json:"delivery_project,omitempty"`
 	DependsOn          []string `json:"depends_on,omitempty"`

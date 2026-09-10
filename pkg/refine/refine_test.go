@@ -121,6 +121,57 @@ func TestBuildFrontierPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildDecompositionPrompt(t *testing.T) {
+	ticket := jira.Ticket{
+		Key:         "STRAT-100",
+		Summary:     "Migrate Auth to Distributed OAuth2",
+		Description: "Decouple legacy auth service into distributed OAuth2 tokens.",
+	}
+
+	now := time.Now().UTC()
+	rounds := []session.Round{
+		{
+			Number: 1,
+			Questions: []session.Question{
+				{
+					ID:     "Q1",
+					Title:  "Token Format",
+					Answer: "JWT",
+				},
+			},
+			AnsweredAt: &now,
+		},
+	}
+
+	docContext := "## Multi-Repo Docs\nOAuth2 boundaries"
+	guidelines := "Always favor OIDC compliant JWTs."
+
+	sysPrompt, userPrompt := refine.BuildDecompositionPrompt(ticket, rounds, docContext, guidelines)
+
+	if !strings.Contains(sysPrompt, "Decomposition Tree") {
+		t.Errorf("expected sysPrompt to mention Decomposition Tree, got: %s", sysPrompt)
+	}
+	if !strings.Contains(sysPrompt, "acceptance_criteria") {
+		t.Errorf("expected sysPrompt to mention acceptance_criteria, got: %s", sysPrompt)
+	}
+	if !strings.Contains(sysPrompt, "depends_on") {
+		t.Errorf("expected sysPrompt to mention depends_on, got: %s", sysPrompt)
+	}
+
+	if !strings.Contains(userPrompt, "STRAT-100") || !strings.Contains(userPrompt, "Migrate Auth to Distributed OAuth2") {
+		t.Errorf("expected userPrompt to include ticket info, got: %s", userPrompt)
+	}
+	if !strings.Contains(userPrompt, "Token Format") || !strings.Contains(userPrompt, "JWT") {
+		t.Errorf("expected userPrompt to include settled interview round answers, got: %s", userPrompt)
+	}
+	if !strings.Contains(userPrompt, "OAuth2 boundaries") {
+		t.Errorf("expected userPrompt to include doc context, got: %s", userPrompt)
+	}
+	if !strings.Contains(userPrompt, "Always favor OIDC compliant JWTs") {
+		t.Errorf("expected userPrompt to include guidelines, got: %s", userPrompt)
+	}
+}
+
 func TestParseQuestions_ValidJSON(t *testing.T) {
 	raw := `[
 		{
@@ -192,6 +243,113 @@ func TestParseQuestions_EmptyOrResolved(t *testing.T) {
 	}
 	if len(questions) != 0 {
 		t.Errorf("expected 0 questions, got %d", len(questions))
+	}
+}
+
+func TestParseDecompositionTree_ValidJSON(t *testing.T) {
+	raw := `{
+		"epics": [
+			{
+				"id": "EPIC-1",
+				"title": "Authentication Core",
+				"description": "OAuth2 / OIDC backend",
+				"delivery_project": "AUTH",
+				"tasks": [
+					{
+						"id": "TASK-1",
+						"title": "JWT Token Verification",
+						"description": "Verify tokens via JWKS",
+						"type": "Story",
+						"acceptance_criteria": ["Caches JWKS keys", "Rejects expired"],
+						"delivery_project": "AUTH",
+						"depends_on": []
+					}
+				]
+			}
+		]
+	}`
+
+	tree, err := refine.ParseDecompositionTree(raw)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	if len(tree.Epics) != 1 {
+		t.Fatalf("expected 1 epic, got %d", len(tree.Epics))
+	}
+	epic := tree.Epics[0]
+	if epic.ID != "EPIC-1" || epic.Title != "Authentication Core" {
+		t.Errorf("unexpected epic: %+v", epic)
+	}
+	if len(epic.Tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(epic.Tasks))
+	}
+	task := epic.Tasks[0]
+	if task.ID != "TASK-1" || task.Type != "Story" || len(task.AcceptanceCriteria) != 2 {
+		t.Errorf("unexpected task: %+v", task)
+	}
+}
+
+func TestParseDecompositionTree_MarkdownFencedAndArrayRoot(t *testing.T) {
+	raw := "Here is the resulting decomposition tree:\n\n```json\n" + `[
+		{
+			"id": "EPIC-1",
+			"title": "Event Bus",
+			"tasks": [
+				{
+					"id": "TASK-1",
+					"title": "Configure Kafka Topics",
+					"acceptance_criteria": ["Partition count configured"]
+				}
+			]
+		}
+	]` + "\n```\nHope this helps!"
+
+	tree, err := refine.ParseDecompositionTree(raw)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	if len(tree.Epics) != 1 {
+		t.Fatalf("expected 1 epic, got %d", len(tree.Epics))
+	}
+	if tree.Epics[0].Tasks[0].Title != "Configure Kafka Topics" {
+		t.Errorf("unexpected task title: %s", tree.Epics[0].Tasks[0].Title)
+	}
+}
+
+func TestParseDecompositionTree_MalformedJSON(t *testing.T) {
+	raw := "Internal server error: LLM crashed"
+	_, err := refine.ParseDecompositionTree(raw)
+	if err == nil {
+		t.Fatal("expected error on malformed json, got nil")
+	}
+}
+
+func TestParseDecompositionTree_ValidationError(t *testing.T) {
+	// Task depending on non-existent task
+	raw := `{
+		"epics": [
+			{
+				"id": "EPIC-1",
+				"title": "Epic",
+				"tasks": [
+					{
+						"id": "TASK-1",
+						"title": "Task 1",
+						"depends_on": ["NONEXISTENT-99"]
+					}
+				]
+			}
+		]
+	}`
+
+	_, err := refine.ParseDecompositionTree(raw)
+	if err == nil {
+		t.Fatal("expected validation error on non-existent dependency, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown dependency") {
+		t.Errorf("expected error to mention unknown dependency, got: %v", err)
 	}
 }
 
@@ -341,4 +499,140 @@ func TestGenerateFrontier_AIError(t *testing.T) {
 		t.Errorf("expected actionable error message, got: %v", err)
 	}
 }
+
+type sequenceMockAI struct {
+	responses []string
+	callCount int
+}
+
+func (s *sequenceMockAI) Name() string { return "sequence-mock" }
+func (s *sequenceMockAI) Review(ctx context.Context, req ai.ReviewRequest) (*ai.ReviewResult, error) {
+	return nil, nil
+}
+func (s *sequenceMockAI) Generate(ctx context.Context, req ai.PromptRequest) (*ai.GenerateResult, error) {
+	if s.callCount >= len(s.responses) {
+		return &ai.GenerateResult{Content: "{}"}, nil
+	}
+	resp := s.responses[s.callCount]
+	s.callCount++
+	return &ai.GenerateResult{Provider: s.Name(), Content: resp}, nil
+}
+
+func TestGenerateDecompositionTree_Success(t *testing.T) {
+	validTreeJSON := `{
+		"epics": [
+			{
+				"id": "EPIC-1",
+				"title": "Auth Platform",
+				"tasks": [
+					{
+						"id": "TASK-1",
+						"title": "JWT Endpoint",
+						"acceptance_criteria": ["Generates RS256 JWT"]
+					}
+				]
+			}
+		]
+	}`
+
+	mockAI := &sequenceMockAI{responses: []string{validTreeJSON}}
+	engine := refine.NewEngine(mockAI)
+
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: "in-progress",
+		Ticket: jira.Ticket{Key: "STRAT-1", Summary: "Auth Modernization"},
+	}
+
+	tree, err := engine.GenerateDecompositionTree(context.Background(), snap, refine.DecompositionOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if tree == nil || len(tree.Epics) != 1 {
+		t.Fatalf("expected 1 epic, got %+v", tree)
+	}
+	if snap.Tree == nil || snap.Tree != tree {
+		t.Errorf("expected snapshot.Tree to be populated with generated tree")
+	}
+	if snap.UpdatedAt.IsZero() {
+		t.Errorf("expected snapshot.UpdatedAt to be updated")
+	}
+	if mockAI.callCount != 1 {
+		t.Errorf("expected exactly 1 AI call, got %d", mockAI.callCount)
+	}
+}
+
+func TestGenerateDecompositionTree_RetrySuccess(t *testing.T) {
+	malformedJSON := "Error: Could not output valid JSON"
+	validTreeJSON := `{
+		"epics": [
+			{
+				"id": "EPIC-1",
+				"title": "Data Pipeline",
+				"tasks": [
+					{
+						"id": "TASK-1",
+						"title": "Ingestion Worker",
+						"acceptance_criteria": ["Ingests 1000 events/sec"]
+					}
+				]
+			}
+		]
+	}`
+
+	mockAI := &sequenceMockAI{responses: []string{malformedJSON, validTreeJSON}}
+	engine := refine.NewEngine(mockAI)
+
+	snap := &session.Snapshot{
+		Key:    "STRAT-2",
+		Status: "in-progress",
+		Ticket: jira.Ticket{Key: "STRAT-2", Summary: "Data Ingestion Pipeline"},
+	}
+
+	tree, err := engine.GenerateDecompositionTree(context.Background(), snap, refine.DecompositionOptions{
+		MaxRetries: 2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error after retry: %v", err)
+	}
+
+	if tree == nil || len(tree.Epics) != 1 {
+		t.Fatalf("expected valid tree after retry, got %+v", tree)
+	}
+	if mockAI.callCount != 2 {
+		t.Errorf("expected 2 AI calls (1 failure + 1 retry success), got %d", mockAI.callCount)
+	}
+}
+
+func TestGenerateDecompositionTree_RetryExhausted(t *testing.T) {
+	mockAI := &sequenceMockAI{responses: []string{"bad-json-1", "bad-json-2", "bad-json-3"}}
+	engine := refine.NewEngine(mockAI)
+
+	snap := &session.Snapshot{
+		Key: "STRAT-3",
+	}
+
+	_, err := engine.GenerateDecompositionTree(context.Background(), snap, refine.DecompositionOptions{
+		MaxRetries: 2,
+	})
+	if err == nil {
+		t.Fatal("expected error when retries exhausted, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to generate valid decomposition tree") {
+		t.Errorf("expected retry failure message, got: %v", err)
+	}
+	if mockAI.callCount != 3 { // 1 initial + 2 retries
+		t.Errorf("expected 3 AI calls, got %d", mockAI.callCount)
+	}
+}
+
+func TestGenerateDecompositionTree_NilSnapshot(t *testing.T) {
+	engine := refine.NewEngine(&mockAIEngine{})
+	_, err := engine.GenerateDecompositionTree(context.Background(), nil, refine.DecompositionOptions{})
+	if err == nil {
+		t.Fatal("expected error on nil snapshot, got nil")
+	}
+}
+
 

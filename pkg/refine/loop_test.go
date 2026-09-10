@@ -81,9 +81,24 @@ func TestSessionLoop_Run_SingleRoundAndFinalize(t *testing.T) {
 		}
 	]`
 	emptyRoundJSON := `[]`
+	treeJSON := `{
+		"epics": [
+			{
+				"id": "EPIC-1",
+				"title": "Authentication Modernization",
+				"tasks": [
+					{
+						"id": "TASK-1",
+						"title": "JWT Endpoint",
+						"acceptance_criteria": ["Issues valid JWTs"]
+					}
+				]
+			}
+		]
+	}`
 
 	mockAI := &sequentialMockAI{
-		responses: []string{round1JSON, emptyRoundJSON},
+		responses: []string{round1JSON, emptyRoundJSON, treeJSON},
 	}
 	engine := refine.NewEngine(mockAI)
 
@@ -162,6 +177,12 @@ func TestSessionLoop_Run_SingleRoundAndFinalize(t *testing.T) {
 	if loaded.Rounds[0].Questions[0].Answer != "PostgreSQL" {
 		t.Errorf("loaded Q1 answer expected 'PostgreSQL', got '%s'", loaded.Rounds[0].Questions[0].Answer)
 	}
+	if snap.Tree == nil || len(snap.Tree.Epics) != 1 {
+		t.Fatalf("expected snap.Tree to have 1 epic, got %+v", snap.Tree)
+	}
+	if loaded.Tree == nil || len(loaded.Tree.Epics) != 1 {
+		t.Fatalf("expected loaded.Tree to have 1 epic, got %+v", loaded.Tree)
+	}
 }
 
 func TestSessionLoop_Run_MultiRoundWithAddRequirement(t *testing.T) {
@@ -213,6 +234,7 @@ func TestSessionLoop_Run_MultiRoundWithAddRequirement(t *testing.T) {
 			emptyRoundJSON,
 			roundAfterReqJSON,
 			emptyRoundJSON,
+			`{"epics":[{"id":"EPIC-1","title":"Event Bus","tasks":[{"id":"TASK-1","title":"Kafka Topic Config"}]}]}`,
 		},
 	}
 	engine := refine.NewEngine(mockAI)
@@ -273,6 +295,12 @@ func TestSessionLoop_Run_MultiRoundWithAddRequirement(t *testing.T) {
 	if loaded.Rounds[3].Questions[0].Answer != "CooperativeSticky" {
 		t.Errorf("round 4 answer expected 'CooperativeSticky', got '%s'", loaded.Rounds[3].Questions[0].Answer)
 	}
+	if snap.Tree == nil || len(snap.Tree.Epics) != 1 {
+		t.Fatalf("expected snap.Tree to be populated, got %+v", snap.Tree)
+	}
+	if loaded.Tree == nil || len(loaded.Tree.Epics) != 1 {
+		t.Fatalf("expected loaded.Tree to be populated, got %+v", loaded.Tree)
+	}
 }
 
 func TestSessionLoop_Run_ResumeExistingFrontier(t *testing.T) {
@@ -300,7 +328,10 @@ func TestSessionLoop_Run_ResumeExistingFrontier(t *testing.T) {
 	}
 
 	mockAI := &sequentialMockAI{
-		responses: []string{`[]`},
+		responses: []string{
+			`[]`,
+			`{"epics":[{"id":"EPIC-1","title":"Audit Logging","tasks":[{"id":"TASK-1","title":"Retention Worker"}]}]}`,
+		},
 	}
 	engine := refine.NewEngine(mockAI)
 
@@ -322,9 +353,9 @@ func TestSessionLoop_Run_ResumeExistingFrontier(t *testing.T) {
 		t.Fatalf("unexpected loop error: %v", err)
 	}
 
-	// Engine should only have been called for the next round (which was empty), not for initial generation
-	if mockAI.callCount != 1 {
-		t.Errorf("expected 1 AI call, got %d", mockAI.callCount)
+	// Engine should have been called for the next round (which was empty), and once for decomposition tree
+	if mockAI.callCount != 2 {
+		t.Errorf("expected 2 AI calls, got %d", mockAI.callCount)
 	}
 
 	loaded, err := store.Load(snap.Key)
@@ -339,6 +370,12 @@ func TestSessionLoop_Run_ResumeExistingFrontier(t *testing.T) {
 	}
 	if loaded.Status != "finalized" {
 		t.Errorf("expected status 'finalized', got '%s'", loaded.Status)
+	}
+	if snap.Tree == nil || len(snap.Tree.Epics) != 1 {
+		t.Fatalf("expected snap.Tree to be populated, got %+v", snap.Tree)
+	}
+	if loaded.Tree == nil || len(loaded.Tree.Epics) != 1 {
+		t.Fatalf("expected loaded.Tree to be populated, got %+v", loaded.Tree)
 	}
 }
 
