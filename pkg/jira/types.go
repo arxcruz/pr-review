@@ -28,3 +28,12 @@ type Ticket struct {
 	Comments    []Comment   `json:"comments"`
 	IssueLinks  []IssueLink `json:"issue_links"`
 }
+
+// RecentTicket represents a summary of a Jira ticket from search results.
+type RecentTicket struct {
+	Key      string `json:"key"`
+	Summary  string `json:"summary"`
+	Status   string `json:"status"`
+	Assignee string `json:"assignee"`
+}
+

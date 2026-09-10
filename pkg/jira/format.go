@@ -1,8 +1,10 @@
 package jira
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
+	"text/tabwriter"
 	"time"
 )
 
@@ -63,4 +65,32 @@ func FormatTicketSummary(t *Ticket) string {
 	}
 	return t.FormatSummary()
 }
+
+// FormatRecentTicketsTable formats a list of recent tickets as an aligned table.
+func FormatRecentTicketsTable(tickets []RecentTicket) string {
+	if len(tickets) == 0 {
+		return "No unresolved tickets found.\n"
+	}
+
+	var buf bytes.Buffer
+	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "KEY\tSTATUS\tASSIGNEE\tSUMMARY")
+	for _, t := range tickets {
+		status := t.Status
+		if status == "" {
+			status = "-"
+		}
+		assignee := t.Assignee
+		if assignee == "" {
+			assignee = "Unassigned"
+		}
+		summary := strings.ReplaceAll(t.Summary, "\t", " ")
+		summary = strings.ReplaceAll(summary, "\n", " ")
+		summary = strings.ReplaceAll(summary, "\r", " ")
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", t.Key, status, assignee, strings.TrimSpace(summary))
+	}
+	w.Flush()
+	return buf.String()
+}
+
 

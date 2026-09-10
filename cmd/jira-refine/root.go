@@ -25,24 +25,16 @@ func newRootCmd() *cobra.Command {
 into structured, actionable delivery items across team projects.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			hasArg := len(args) > 0 && strings.TrimSpace(args[0]) != ""
 			if opts.dump {
-				if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+				if !hasArg {
 					return fmt.Errorf("ticket key is required when using --dump")
 				}
 				key := strings.TrimSpace(args[0])
 
-				cfg, _, err := config.LoadConfig(opts.configFile)
+				_, client, err := initJiraClient(opts.configFile)
 				if err != nil {
-					return fmt.Errorf("failed to load configuration: %w", err)
-				}
-
-				if err := cfg.Jira.Validate(); err != nil {
-					return fmt.Errorf("invalid jira configuration: %w", err)
-				}
-
-				client, err := jira.NewClient(cfg.Jira)
-				if err != nil {
-					return fmt.Errorf("failed to initialize jira client: %w", err)
+					return err
 				}
 
 				ticket, err := client.GetTicket(cmd.Context(), key)
@@ -55,8 +47,19 @@ into structured, actionable delivery items across team projects.`,
 				return nil
 			}
 
-			if len(args) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "jira-refine: pass a ticket KEY (e.g. jira-refine <KEY> --dump)")
+			if !hasArg {
+				cfg, client, err := initJiraClient(opts.configFile)
+				if err != nil {
+					return err
+				}
+
+				tickets, err := client.GetRecentTickets(cmd.Context(), cfg.Jira.OriginProject)
+				if err != nil {
+					return err
+				}
+
+				table := jira.FormatRecentTicketsTable(tickets)
+				fmt.Fprint(cmd.OutOrStdout(), table)
 				return nil
 			}
 
@@ -68,6 +71,24 @@ into structured, actionable delivery items across team projects.`,
 	cmd.Flags().BoolVar(&opts.dump, "dump", false, "Dump parsed ticket summary to terminal")
 
 	return cmd
+}
+
+func initJiraClient(configFile string) (*config.Config, jira.Client, error) {
+	cfg, _, err := config.LoadConfig(configFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	if err := cfg.Jira.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("invalid jira configuration: %w", err)
+	}
+
+	client, err := jira.NewClient(cfg.Jira)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize jira client: %w", err)
+	}
+
+	return cfg, client, nil
 }
 
 func Execute() {

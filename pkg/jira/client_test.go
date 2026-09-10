@@ -319,3 +319,114 @@ func TestClient_GetTicket_ADFDescription_Success(t *testing.T) {
 	}
 }
 
+func TestClient_GetRecentTickets_Success(t *testing.T) {
+	mockResponse := map[string]interface{}{
+		"startAt":    0,
+		"maxResults": 50,
+		"total":      2,
+		"issues": []map[string]interface{}{
+			{
+				"key": "STRAT-10",
+				"fields": map[string]interface{}{
+					"summary": "Implement Auth Subsystem",
+					"status": map[string]interface{}{
+						"name": "In Progress",
+					},
+					"assignee": map[string]interface{}{
+						"displayName": "Alice Smith",
+						"name":        "asmith",
+					},
+				},
+			},
+			{
+				"key": "STRAT-11",
+				"fields": map[string]interface{}{
+					"summary": "Database Sharding Plan",
+					"status": map[string]interface{}{
+						"name": "Open",
+					},
+					"assignee": nil,
+				},
+			},
+		},
+	}
+
+	var interceptedURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		interceptedURL = r.URL.String()
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if !strings.HasPrefix(r.URL.Path, "/rest/api/2/search") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(mockResponse)
+	}))
+	defer server.Close()
+
+	cfg := config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	tickets, err := client.GetRecentTickets(context.Background(), "STRAT")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(interceptedURL, "jql=project") || !strings.Contains(interceptedURL, "resolution+%3D+Unresolved") && !strings.Contains(interceptedURL, "resolution = Unresolved") && !strings.Contains(interceptedURL, "resolution%20%3D%20Unresolved") {
+		t.Errorf("expected JQL with unresolved resolution, got URL: %s", interceptedURL)
+	}
+
+	if len(tickets) != 2 {
+		t.Fatalf("expected 2 tickets, got %d", len(tickets))
+	}
+
+	if tickets[0].Key != "STRAT-10" || tickets[0].Summary != "Implement Auth Subsystem" || tickets[0].Status != "In Progress" || tickets[0].Assignee != "Alice Smith" {
+		t.Errorf("unexpected ticket 0: %+v", tickets[0])
+	}
+
+	if tickets[1].Key != "STRAT-11" || tickets[1].Summary != "Database Sharding Plan" || tickets[1].Status != "Open" || tickets[1].Assignee != "" {
+		t.Errorf("unexpected ticket 1: %+v", tickets[1])
+	}
+}
+
+func TestClient_GetRecentTickets_EmptyProject(t *testing.T) {
+	client, err := NewClient(config.JiraConfig{URL: "https://jira.example.com", Token: "abc"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_, err = client.GetRecentTickets(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for empty project, got nil")
+	}
+}
+
+func TestClient_GetRecentTickets_AuthError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"errorMessages":["Unauthorized"]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{URL: server.URL, Token: "bad"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_, err = client.GetRecentTickets(context.Background(), "STRAT")
+	if err == nil {
+		t.Fatal("expected error on 401, got nil")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("expected auth failure error, got: %v", err)
+	}
+}
+

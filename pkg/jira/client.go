@@ -17,6 +17,7 @@ import (
 // Client interface defines Jira operations.
 type Client interface {
 	GetTicket(ctx context.Context, key string) (*Ticket, error)
+	GetRecentTickets(ctx context.Context, project string) ([]RecentTicket, error)
 }
 
 // HTTPClient is the concrete implementation of Client talking to Jira REST API.
@@ -245,6 +246,123 @@ func (c *HTTPClient) GetTicket(ctx context.Context, key string) (*Ticket, error)
 	}
 
 	return ticket, nil
+}
+
+type jiraSearchResponse struct {
+	StartAt    int                 `json:"startAt"`
+	MaxResults int                 `json:"maxResults"`
+	Total      int                 `json:"total"`
+	Issues     []jiraSearchIssue   `json:"issues"`
+}
+
+type jiraSearchIssue struct {
+	Key    string                 `json:"key"`
+	Fields jiraSearchIssueFields `json:"fields"`
+}
+
+type jiraSearchIssueFields struct {
+	Summary  string         `json:"summary"`
+	Status   *jiraNamedItem `json:"status"`
+	Assignee *jiraAssignee  `json:"assignee"`
+}
+
+type jiraAssignee struct {
+	DisplayName string `json:"displayName"`
+	Name        string `json:"name"`
+}
+
+// GetRecentTickets queries Jira for recent unresolved tickets in a project.
+func (c *HTTPClient) GetRecentTickets(ctx context.Context, project string) ([]RecentTicket, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return nil, fmt.Errorf("project cannot be empty")
+	}
+
+	jql := fmt.Sprintf("project = %q AND resolution = Unresolved ORDER BY updated DESC", project)
+	params := url.Values{}
+	params.Set("jql", jql)
+	params.Set("fields", "key,summary,status,assignee")
+	params.Set("maxResults", "50")
+
+	reqURL := fmt.Sprintf("%s/rest/api/2/search?%s", c.baseURL, params.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+	if c.authHeader != "" {
+		req.Header.Set("Authorization", c.authHeader)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("jira connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusBadRequest {
+		errDetail := c.parseErrorMessage(bodyBytes)
+		if errDetail != "" {
+			return nil, fmt.Errorf("invalid jira search query (HTTP 400): %s", errDetail)
+		}
+		return nil, fmt.Errorf("invalid jira search query (HTTP 400)")
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		errDetail := c.parseErrorMessage(bodyBytes)
+		if errDetail != "" {
+			return nil, fmt.Errorf("jira authentication failed (HTTP %d): %s", resp.StatusCode, errDetail)
+		}
+		return nil, fmt.Errorf("jira authentication failed (HTTP %d): check configured token or pat for %s", resp.StatusCode, c.baseURL)
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		errDetail := c.parseErrorMessage(bodyBytes)
+		if errDetail != "" {
+			return nil, fmt.Errorf("jira resource not found (HTTP 404): %s", errDetail)
+		}
+		return nil, fmt.Errorf("jira resource not found (HTTP 404)")
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errDetail := c.parseErrorMessage(bodyBytes)
+		if errDetail != "" {
+			return nil, fmt.Errorf("jira API request failed (HTTP %d): %s", resp.StatusCode, errDetail)
+		}
+		return nil, fmt.Errorf("jira API request failed (HTTP %d)", resp.StatusCode)
+	}
+
+	var searchResp jiraSearchResponse
+	if err := json.Unmarshal(bodyBytes, &searchResp); err != nil {
+		return nil, fmt.Errorf("failed to decode jira response: %w", err)
+	}
+
+	tickets := make([]RecentTicket, 0, len(searchResp.Issues))
+	for _, issue := range searchResp.Issues {
+		t := RecentTicket{
+			Key:     issue.Key,
+			Summary: issue.Fields.Summary,
+		}
+		if issue.Fields.Status != nil {
+			t.Status = issue.Fields.Status.Name
+		}
+		if issue.Fields.Assignee != nil {
+			if issue.Fields.Assignee.DisplayName != "" {
+				t.Assignee = issue.Fields.Assignee.DisplayName
+			} else {
+				t.Assignee = issue.Fields.Assignee.Name
+			}
+		}
+		tickets = append(tickets, t)
+	}
+
+	return tickets, nil
 }
 
 func (c *HTTPClient) parseErrorMessage(body []byte) string {

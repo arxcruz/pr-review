@@ -77,3 +77,52 @@ func TestFormatTicketSummary_EmptyFields(t *testing.T) {
 		t.Errorf("expected formatted output to contain summary, got:\n%s", formatted)
 	}
 }
+
+func TestFormatRecentTicketsTable_WithTickets(t *testing.T) {
+	tickets := []RecentTicket{
+		{
+			Key:      "STRAT-10",
+			Summary:  "Implement Auth Subsystem",
+			Status:   "In Progress",
+			Assignee: "Alice Smith",
+		},
+		{
+			Key:      "STRAT-11",
+			Summary:  "Database Sharding Plan",
+			Status:   "Open",
+			Assignee: "",
+		},
+	}
+
+	table := FormatRecentTicketsTable(tickets)
+
+	expectedHeaders := []string{"KEY", "STATUS", "ASSIGNEE", "SUMMARY"}
+	for _, h := range expectedHeaders {
+		if !strings.Contains(table, h) {
+			t.Errorf("expected table to contain header %q, got:\n%s", h, table)
+		}
+	}
+
+	expectedSubstrings := []string{
+		"STRAT-10", "In Progress", "Alice Smith", "Implement Auth Subsystem",
+		"STRAT-11", "Open", "Unassigned", "Database Sharding Plan",
+	}
+	for _, sub := range expectedSubstrings {
+		if !strings.Contains(table, sub) {
+			t.Errorf("expected table to contain %q, got:\n%s", sub, table)
+		}
+	}
+}
+
+func TestFormatRecentTicketsTable_Empty(t *testing.T) {
+	table := FormatRecentTicketsTable(nil)
+	if !strings.Contains(table, "No unresolved tickets found") {
+		t.Errorf("expected message for empty tickets, got: %q", table)
+	}
+
+	table = FormatRecentTicketsTable([]RecentTicket{})
+	if !strings.Contains(table, "No unresolved tickets found") {
+		t.Errorf("expected message for empty tickets, got: %q", table)
+	}
+}
+
