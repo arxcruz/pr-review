@@ -24,6 +24,7 @@ type JiraConfig struct {
 type JiraTeamConfig struct {
 	DeliveryProject string               `yaml:"delivery_project"`
 	IssueTypes      JiraIssueTypesConfig `yaml:"issue_types,omitempty"`
+	Keywords        []string             `yaml:"keywords,omitempty"`
 }
 
 // JiraIssueTypesConfig defines the issue types for Epics, Tasks, and Stories.

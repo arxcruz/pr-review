@@ -414,7 +414,7 @@ func TestRootCmd_InteractiveRefine_ResumeExisting(t *testing.T) {
 		Status:  "in-progress",
 		Ticket: jira.Ticket{
 			Key:     "STRAT-50",
-			Summary: "Resumed Initiative",
+			Summary: "Resumed Strategic Ticket",
 		},
 		CurrentFrontier: []session.Question{
 			{
@@ -511,6 +511,148 @@ jira:
 		t.Errorf("expected OptA answer, got: %s", loaded.Rounds[0].Questions[0].Answer)
 	}
 }
+
+func TestRootCmd_Plan_Success(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionDir := filepath.Join(tmpDir, "sessions")
+	_ = os.MkdirAll(sessionDir, 0755)
+
+	snap := session.Snapshot{
+		Version: 1,
+		Key:     "STRAT-99",
+		Status:  "finalized",
+		Ticket: jira.Ticket{
+			Key:     "STRAT-99",
+			Summary: "Enterprise SSO Rollout",
+		},
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:          "EPIC-1",
+					Title:       "Backend SSO Core",
+					Description: "Backend service integration",
+					Tasks: []session.DecompositionTask{
+						{
+							ID:                 "TASK-1",
+							Title:              "Token validation logic",
+							Description:        "Validate signatures",
+							AcceptanceCriteria: []string{"Returns 200 OK"},
+						},
+					},
+				},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(snap, "", "  ")
+	_ = os.WriteFile(filepath.Join(sessionDir, "STRAT-99.json"), data, 0644)
+
+	cfgFile := filepath.Join(tmpDir, "config.yaml")
+	cfgContent := `
+jira:
+  url: "https://jira.example.com"
+  pat: "test-pat"
+  origin_project: "STRAT"
+  teams:
+    backend:
+      delivery_project: "DELIV"
+      keywords: ["backend", "token"]
+      issue_types:
+        epic: "Epic"
+        task: "Task"
+        story: "Story"
+  doc_paths:
+    - "` + tmpDir + `"
+`
+	if err := os.WriteFile(cfgFile, []byte(cfgContent), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	planFilePath := filepath.Join(tmpDir, "plans", "strat-99-plan.md")
+	outBuf := new(bytes.Buffer)
+
+	cmd := newRootCmd()
+	cmd.SetOut(outBuf)
+	cmd.SetErr(outBuf)
+	cmd.SetArgs([]string{"STRAT-99", "--plan", "--config", cfgFile, "--session-dir", sessionDir, "--plan-file", planFilePath})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("expected execute success, got: %v", err)
+	}
+
+	out := outBuf.String()
+	if !strings.Contains(out, "# Refinement Delivery Plan: STRAT-99 - Enterprise SSO Rollout") {
+		t.Errorf("expected plan header in stdout, got:\n%s", out)
+	}
+	if !strings.Contains(out, "DELIV") {
+		t.Errorf("expected DELIV delivery project in stdout, got:\n%s", out)
+	}
+
+	// Verify plan file
+	planBytes, err := os.ReadFile(planFilePath)
+	if err != nil {
+		t.Fatalf("failed to read plan file: %v", err)
+	}
+	if !strings.Contains(string(planBytes), "Refinement Delivery Plan: STRAT-99") {
+		t.Errorf("plan file missing title, got:\n%s", string(planBytes))
+	}
+
+	// Verify snapshot updated on disk
+	store := session.NewFileStore(sessionDir)
+	loaded, err := store.Load("STRAT-99")
+	if err != nil {
+		t.Fatalf("failed to load snapshot: %v", err)
+	}
+	if loaded.Tree.Epics[0].DeliveryProject != "DELIV" {
+		t.Errorf("expected routed delivery project DELIV, got %q", loaded.Tree.Epics[0].DeliveryProject)
+	}
+}
+
+func TestRootCmd_Plan_NoTreeError(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionDir := filepath.Join(tmpDir, "sessions")
+	_ = os.MkdirAll(sessionDir, 0755)
+
+	snap := session.Snapshot{
+		Version: 1,
+		Key:     "STRAT-10",
+		Status:  "in-progress",
+		Ticket: jira.Ticket{
+			Key:     "STRAT-10",
+			Summary: "Incomplete ticket",
+		},
+	}
+	data, _ := json.MarshalIndent(snap, "", "  ")
+	_ = os.WriteFile(filepath.Join(sessionDir, "STRAT-10.json"), data, 0644)
+
+	cfgFile := filepath.Join(tmpDir, "config.yaml")
+	cfgContent := `
+jira:
+  url: "https://jira.example.com"
+  pat: "test-pat"
+  origin_project: "STRAT"
+  teams:
+    backend:
+      delivery_project: "DELIV"
+  doc_paths:
+    - "` + tmpDir + `"
+`
+	_ = os.WriteFile(cfgFile, []byte(cfgContent), 0644)
+
+	cmd := newRootCmd()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"STRAT-10", "--plan", "--config", cfgFile, "--session-dir", sessionDir})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when no tree is present, got nil")
+	}
+	if !strings.Contains(err.Error(), "no decomposition tree found") {
+		t.Errorf("expected error mentioning no decomposition tree, got: %v", err)
+	}
+}
+
 
 
 

@@ -18,6 +18,8 @@ import (
 type rootOptions struct {
 	configFile string
 	dump       bool
+	plan       bool
+	planFile   string
 	provider   string
 	model      string
 	sessionDir string
@@ -54,6 +56,45 @@ into structured, actionable delivery items across team projects.`,
 
 				summary := jira.FormatTicketSummary(ticket)
 				fmt.Fprint(cmd.OutOrStdout(), summary)
+				return nil
+			}
+
+			if opts.plan {
+				if !hasArg {
+					return fmt.Errorf("ticket key is required when using --plan")
+				}
+				key := strings.TrimSpace(args[0])
+				cfg, _, err := initJiraClient(opts.configFile)
+				if err != nil {
+					return err
+				}
+
+				store := session.NewFileStore(opts.sessionDir)
+				snap, err := store.Load(key)
+				if err != nil {
+					return fmt.Errorf("failed to load session snapshot: %w", err)
+				}
+				if snap.Tree == nil || len(snap.Tree.Epics) == 0 {
+					return fmt.Errorf("no decomposition tree found in session snapshot for %s; refine ticket first", key)
+				}
+
+				router := refine.NewRouter(&cfg.Jira)
+				if err := router.Route(cmd.Context(), snap); err != nil {
+					return fmt.Errorf("failed to route decomposition tree: %w", err)
+				}
+				if err := store.Save(snap); err != nil {
+					return fmt.Errorf("failed to save routed snapshot: %w", err)
+				}
+
+				planMd := refine.FormatPlanMarkdown(snap, &cfg.Jira)
+				fmt.Fprint(cmd.OutOrStdout(), planMd)
+
+				if opts.planFile != "" {
+					if err := refine.WritePlanFile(opts.planFile, planMd); err != nil {
+						return fmt.Errorf("failed to write plan file: %w", err)
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "\nPlan successfully written to %s\n", opts.planFile)
+				}
 				return nil
 			}
 
@@ -120,10 +161,19 @@ into structured, actionable delivery items across team projects.`,
 				}
 			}
 
+			router := refine.NewRouter(&cfg.Jira,
+				refine.WithAIEngine(aiEngine),
+				refine.WithModel(opts.model),
+				refine.WithInteractive(cmd.InOrStdin(), cmd.OutOrStdout()),
+			)
+
 			loop := refine.NewSessionLoop(refine.LoopConfig{
-				Engine:   refineEngine,
-				Store:    store,
-				Snapshot: snap,
+				Engine:     refineEngine,
+				Store:      store,
+				Snapshot:   snap,
+				Router:     router,
+				JiraConfig: &cfg.Jira,
+				PlanFile:   opts.planFile,
 				Opts: refine.FrontierOptions{
 					DocContext: docContext,
 					Model:      opts.model,
@@ -138,6 +188,8 @@ into structured, actionable delivery items across team projects.`,
 
 	cmd.Flags().StringVarP(&opts.configFile, "config", "c", "", "Path to YAML configuration file")
 	cmd.Flags().BoolVar(&opts.dump, "dump", false, "Dump parsed ticket summary to terminal")
+	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Output formatted markdown plan summary for ticket session")
+	cmd.Flags().StringVar(&opts.planFile, "plan-file", "", "Path to write formatted plan markdown file")
 	cmd.Flags().StringVar(&opts.provider, "provider", "", "AI provider to use (ollama, openai, anthropic, gemini, etc.)")
 	cmd.Flags().StringVar(&opts.model, "model", "", "AI model override")
 	cmd.Flags().StringVar(&opts.sessionDir, "session-dir", "", "Path to directory for persisting session snapshots")

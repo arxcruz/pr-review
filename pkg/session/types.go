@@ -43,6 +43,7 @@ type DecompositionEpic struct {
 	Key             string              `json:"key,omitempty"`
 	Title           string              `json:"title"`
 	Description     string              `json:"description,omitempty"`
+	Type            string              `json:"type,omitempty"`
 	DeliveryProject string              `json:"delivery_project,omitempty"`
 	Tasks           []DecompositionTask `json:"tasks,omitempty"`
 }

@@ -9,27 +9,34 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/arxcruz/pr-review/pkg/config"
 	"github.com/arxcruz/pr-review/pkg/session"
 )
 
 // LoopConfig configures the interactive CLI refinement loop.
 type LoopConfig struct {
-	Engine   *Engine
-	Store    session.Store
-	Snapshot *session.Snapshot
-	Opts     FrontierOptions
-	In       io.Reader
-	Out      io.Writer
+	Engine     *Engine
+	Store      session.Store
+	Snapshot   *session.Snapshot
+	Opts       FrontierOptions
+	Router     *Router
+	JiraConfig *config.JiraConfig
+	PlanFile   string
+	In         io.Reader
+	Out        io.Writer
 }
 
 // SessionLoop manages the interactive refinement REPL.
 type SessionLoop struct {
-	engine   *Engine
-	store    session.Store
-	snapshot *session.Snapshot
-	opts     FrontierOptions
-	in       io.Reader
-	out      io.Writer
+	engine     *Engine
+	store      session.Store
+	snapshot   *session.Snapshot
+	opts       FrontierOptions
+	router     *Router
+	jiraConfig *config.JiraConfig
+	planFile   string
+	in         io.Reader
+	out        io.Writer
 }
 
 // NewSessionLoop creates a new interactive refinement loop instance.
@@ -43,12 +50,15 @@ func NewSessionLoop(cfg LoopConfig) *SessionLoop {
 		out = os.Stdout
 	}
 	return &SessionLoop{
-		engine:   cfg.Engine,
-		store:    cfg.Store,
-		snapshot: cfg.Snapshot,
-		opts:     cfg.Opts,
-		in:       in,
-		out:      out,
+		engine:     cfg.Engine,
+		store:      cfg.Store,
+		snapshot:   cfg.Snapshot,
+		opts:       cfg.Opts,
+		router:     cfg.Router,
+		jiraConfig: cfg.JiraConfig,
+		planFile:   cfg.PlanFile,
+		in:         in,
+		out:        out,
 	}
 }
 
@@ -63,7 +73,7 @@ func (l *SessionLoop) Run(ctx context.Context) error {
 
 	if l.snapshot.Status == session.StatusFinalized {
 		fmt.Fprintf(l.out, "Refinement session for [%s] is already finalized.\n", l.snapshot.Key)
-		return nil
+		return l.outputPlan()
 	}
 
 	reader := bufio.NewReader(l.in)
@@ -135,12 +145,20 @@ func (l *SessionLoop) Run(ctx context.Context) error {
 				fmt.Fprintf(l.out, "Decomposition Tree generated: %d epics created.\n", len(tree.Epics))
 			}
 
+			if l.router != nil && l.snapshot.Tree != nil {
+				fmt.Fprintf(l.out, "Routing Decomposition Tree to Delivery Projects...\n")
+				if err := l.router.Route(ctx, l.snapshot); err != nil {
+					return fmt.Errorf("failed to route decomposition tree: %w", err)
+				}
+			}
+
 			l.snapshot.Status = session.StatusFinalized
 			if err := l.saveSnapshot(); err != nil {
 				return fmt.Errorf("failed to save finalized snapshot: %w", err)
 			}
 			fmt.Fprintf(l.out, "Refinement session for [%s] finalized.\n", l.snapshot.Key)
-			return nil
+
+			return l.outputPlan()
 		}
 
 		// Prompt user through each question in CurrentFrontier
@@ -239,4 +257,19 @@ func (l *SessionLoop) saveSnapshot() error {
 		return nil
 	}
 	return l.store.Save(l.snapshot)
+}
+
+func (l *SessionLoop) outputPlan() error {
+	if l.snapshot == nil || l.snapshot.Tree == nil {
+		return nil
+	}
+	planMd := FormatPlanMarkdown(l.snapshot, l.jiraConfig)
+	fmt.Fprintf(l.out, "\n%s\n", planMd)
+	if l.planFile != "" {
+		if err := WritePlanFile(l.planFile, planMd); err != nil {
+			return fmt.Errorf("failed to write plan file: %w", err)
+		}
+		fmt.Fprintf(l.out, "Plan successfully written to %s\n", l.planFile)
+	}
+	return nil
 }

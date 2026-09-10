@@ -1,5 +1,6 @@
 # Binaries
 /pr-review
+/jira-refine
 *.exe
 *.exe~
 *.dll

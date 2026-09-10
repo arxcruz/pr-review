@@ -40,6 +40,10 @@ const DecompositionTreeJSONSchema = `{
             "type": "string",
             "description": "Assigned team delivery project key"
           },
+          "type": {
+            "type": "string",
+            "description": "Issue type, e.g. Epic"
+          },
           "tasks": {
             "type": "array",
             "items": {
@@ -75,7 +79,7 @@ const DecompositionTreeJSONSchema = `{
                 },
                 "delivery_project": {
                   "type": "string",
-                  "description": "Target team delivery project"
+                  "description": "Assigned team delivery project"
                 },
                 "depends_on": {
                   "type": "array",

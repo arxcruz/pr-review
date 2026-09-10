@@ -3,10 +3,13 @@ package refine_test
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/arxcruz/pr-review/pkg/ai"
+	"github.com/arxcruz/pr-review/pkg/config"
 	"github.com/arxcruz/pr-review/pkg/jira"
 	"github.com/arxcruz/pr-review/pkg/refine"
 	"github.com/arxcruz/pr-review/pkg/session"
@@ -376,6 +379,125 @@ func TestSessionLoop_Run_ResumeExistingFrontier(t *testing.T) {
 	}
 	if loaded.Tree == nil || len(loaded.Tree.Epics) != 1 {
 		t.Fatalf("expected loaded.Tree to be populated, got %+v", loaded.Tree)
+	}
+}
+
+func TestSessionLoop_Run_WithRouterAndPlanOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := session.NewFileStore(tmpDir)
+
+	snap := &session.Snapshot{
+		Key:    "STRAT-50",
+		Status: "new",
+		Ticket: jira.Ticket{
+			Key:     "STRAT-50",
+			Summary: "Payments Engine Gateway",
+		},
+	}
+	if err := store.Save(snap); err != nil {
+		t.Fatalf("failed to save snapshot: %v", err)
+	}
+
+	cfg := &config.JiraConfig{
+		OriginProject: "ORIGIN",
+		Teams: map[string]config.JiraTeamConfig{
+			"payments": {
+				DeliveryProject: "PAY",
+				Keywords:        []string{"gateway", "stripe"},
+				IssueTypes: config.JiraIssueTypesConfig{
+					Epic:  "Epic",
+					Task:  "Task",
+					Story: "Story",
+				},
+			},
+		},
+	}
+
+	mockAI := &sequentialMockAI{
+		responses: []string{
+			// Empty initial frontier: moves straight to finalize
+			`[]`,
+			// Decomposition tree response
+			`{
+				"epics": [
+					{
+						"id": "EPIC-1",
+						"title": "Stripe Gateway Integration",
+						"tasks": [
+							{
+								"id": "TASK-1",
+								"title": "Webhook handler",
+								"acceptance_criteria": ["Handles 200 OK"]
+							}
+						]
+					}
+				]
+			}`,
+		},
+	}
+
+	engine := refine.NewEngine(mockAI)
+	router := refine.NewRouter(cfg)
+	planFile := filepath.Join(tmpDir, "output-plan.md")
+
+	// Input "F\n" to finalize immediately
+	inBuf := strings.NewReader("F\n")
+	outBuf := new(bytes.Buffer)
+
+	loop := refine.NewSessionLoop(refine.LoopConfig{
+		Engine:     engine,
+		Store:      store,
+		Snapshot:   snap,
+		Router:     router,
+		JiraConfig: cfg,
+		PlanFile:   planFile,
+		In:         inBuf,
+		Out:        outBuf,
+	})
+
+	err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected loop error: %v", err)
+	}
+
+	// Verify snap was finalized and routed
+	if snap.Status != session.StatusFinalized {
+		t.Errorf("expected status finalized, got %q", snap.Status)
+	}
+	if snap.Tree == nil || len(snap.Tree.Epics) != 1 {
+		t.Fatalf("expected 1 epic in tree, got %+v", snap.Tree)
+	}
+	if snap.Tree.Epics[0].DeliveryProject != "PAY" {
+		t.Errorf("expected epic routed to PAY, got %q", snap.Tree.Epics[0].DeliveryProject)
+	}
+	if snap.Tree.Epics[0].Tasks[0].DeliveryProject != "PAY" {
+		t.Errorf("expected task routed to PAY, got %q", snap.Tree.Epics[0].Tasks[0].DeliveryProject)
+	}
+
+	// Verify persistence in store
+	loaded, err := store.Load(snap.Key)
+	if err != nil {
+		t.Fatalf("failed to load snapshot from store: %v", err)
+	}
+	if loaded.Tree.Epics[0].DeliveryProject != "PAY" {
+		t.Errorf("expected loaded epic delivery project PAY, got %q", loaded.Tree.Epics[0].DeliveryProject)
+	}
+
+	// Verify plan file written
+	planData, err := os.ReadFile(planFile)
+	if err != nil {
+		t.Fatalf("failed to read plan file: %v", err)
+	}
+	if !strings.Contains(string(planData), "Refinement Delivery Plan: STRAT-50") {
+		t.Errorf("plan file missing title, got:\n%s", string(planData))
+	}
+	if !strings.Contains(string(planData), "PAY") {
+		t.Errorf("plan file missing PAY delivery project, got:\n%s", string(planData))
+	}
+
+	// Verify terminal output contains plan
+	if !strings.Contains(outBuf.String(), "Refinement Delivery Plan: STRAT-50") {
+		t.Errorf("stdout output missing plan summary, got:\n%s", outBuf.String())
 	}
 }
 
