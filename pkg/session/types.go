@@ -1,6 +1,8 @@
 package session
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/arxcruz/pr-review/pkg/jira"
@@ -60,6 +62,36 @@ type Snapshot struct {
 	Rounds          []Round            `json:"rounds,omitempty"`
 	CurrentFrontier []Question         `json:"current_frontier,omitempty"`
 	Tree            *DecompositionTree `json:"tree,omitempty"`
+}
+
+const (
+	// StatusNew represents an initialized session snapshot before refinement begins.
+	StatusNew = "new"
+	// StatusInProgress represents a session actively undergoing frontier question refinement.
+	StatusInProgress = "in-progress"
+	// StatusFinalized represents a completed session where all frontier questions have been resolved.
+	StatusFinalized = "finalized"
+)
+
+// AddUserRequirement appends an answered requirement round and advances the snapshot.
+func (s *Snapshot) AddUserRequirement(reqText string) {
+	if s == nil {
+		return
+	}
+	trimmed := strings.TrimSpace(reqText)
+	if trimmed == "" {
+		return
+	}
+	s.CurrentFrontier = []Question{
+		{
+			ID:             fmt.Sprintf("USER-REQ-%d", len(s.Rounds)+1),
+			Title:          "Additional User Requirement",
+			Explanation:    "User provided extra architectural requirements or context",
+			Recommendation: trimmed,
+			Answer:         trimmed,
+		},
+	}
+	s.AdvanceRound()
 }
 
 // AdvanceRound archives current frontier questions into a completed Round and clears CurrentFrontier.
