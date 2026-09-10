@@ -1,0 +1,3 @@
+# Jira Refine Architecture and Cross-Project Routing
+
+We introduce `jira-refine` as a distinct binary within this repository, sharing `pkg/ai` multi-LLM engine capabilities before a future repository rename. Unified configuration lives in `~/.pr-review.yaml` with a new `jira:` section to avoid duplicating LLM provider credentials. Strategic tickets from an origin project (such as `ORIGIN`) are interactively refined into a decomposition tree of Epics and Tasks routed across team-specific delivery projects, linked hierarchically or via issue links. Sessions persist snapshots locally (`~/.config/jira-refine/sessions/`) for pause/resume and preview prior to remote Jira synchronization.

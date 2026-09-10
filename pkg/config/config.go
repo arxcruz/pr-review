@@ -20,6 +20,7 @@ type Config struct {
 	Git               GitConfig         `yaml:"git"`
 	Keybindings       KeybindingsConfig `yaml:"keybindings"`
 	Projects          []ProjectConfig   `yaml:"projects"`
+	Jira              JiraConfig        `yaml:"jira,omitempty"`
 }
 
 type AIEndpointConfig struct {
@@ -505,6 +506,9 @@ func LoadConfig(path string) (*Config, string, error) {
 	if cfg.Git.Gerrit.Password == "" {
 		cfg.Git.Gerrit.Password = os.Getenv("GERRIT_PASSWORD")
 	}
+
+	// Jira configuration defaults and environment variable fallback
+	cfg.Jira.ApplyEnvAndDefaults()
 
 	// Inject API keys from environment into endpoints that lack them
 	for i := range cfg.AI.Endpoints {

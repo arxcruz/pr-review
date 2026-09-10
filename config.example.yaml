@@ -151,4 +151,30 @@ keybindings:
   help: ["?"]                     # Toggle help popup
   quit: ["q", "ctrl+c"]           # Quit application
 
+# Jira Refinement Configuration
+# Used by jira-refine for strategic ticket breakdown, doc ingestion, and cross-project sync.
+jira:
+  url: "https://jira.example.com"          # Jira server URL
+  token: "${JIRA_TOKEN}"                   # API token or PAT
+  origin_project: "ORIGIN"                 # Origin Project key containing Strategic Tickets
+
+  # Team delivery project routing mappings
+  teams:
+    backend:
+      delivery_project: "CORE"             # Delivery Project key
+      issue_types:
+        epic: "Epic"                       # Default: "Epic"
+        task: "Task"                       # Default: "Task"
+        story: "Story"                     # Default: "Story"
+    frontend:
+      delivery_project: "WEB"
+      issue_types:
+        epic: "Epic"
+        task: "Task"
+
+  # Multi-repo documentation paths for architectural context ingestion
+  doc_paths:
+    - "~/repos/backend/docs"
+    - "~/repos/frontend/docs"
+
 
