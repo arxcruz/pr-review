@@ -176,6 +176,63 @@ func TestClient_GetTicket_BasicAuth_Success(t *testing.T) {
 	}
 }
 
+func TestClient_NewClient_BasicAuthWithUserField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("user@example.com:api-token"))
+		if authHeader != expected {
+			t.Errorf("expected Basic auth header %s, got: %s", expected, authHeader)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		mockResp := map[string]interface{}{
+			"key": "STRAT-100",
+			"fields": map[string]interface{}{
+				"summary": "Basic Auth Ticket with User Field",
+				"status":  map[string]interface{}{"name": "Open"},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(mockResp)
+	}))
+	defer server.Close()
+
+	cfg := config.JiraConfig{
+		URL:   server.URL,
+		User:  "user@example.com",
+		Token: "api-token",
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ticket, err := client.GetTicket(context.Background(), "STRAT-100")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ticket.Summary != "Basic Auth Ticket with User Field" {
+		t.Errorf("unexpected summary: %s", ticket.Summary)
+	}
+}
+
+func TestClient_NewClient_AtlassianTokenMissingUser(t *testing.T) {
+	cfg := config.JiraConfig{
+		URL:   "https://test.atlassian.net",
+		Token: "ATATT3xFfGF0BtmdK9fOINFDhNr...",
+	}
+
+	_, err := NewClient(cfg)
+	if err == nil {
+		t.Fatal("expected error for ATATT token without user, got nil")
+	}
+	if !strings.Contains(err.Error(), "Atlassian Cloud API token requires user/email") {
+		t.Errorf("expected helpful Atlassian token error, got: %v", err)
+	}
+}
+
 func TestClient_GetTicket_AuthFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

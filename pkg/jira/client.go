@@ -34,12 +34,21 @@ func NewClient(cfg config.JiraConfig) (Client, error) {
 		return nil, fmt.Errorf("jira url cannot be empty")
 	}
 
+	username := cfg.User
+	if username == "" {
+		username = cfg.Email
+	}
+
 	authHeader := ""
 	if cfg.Token != "" {
 		if strings.HasPrefix(cfg.Token, "Bearer ") || strings.HasPrefix(cfg.Token, "Basic ") {
 			authHeader = cfg.Token
 		} else if strings.Contains(cfg.Token, ":") {
 			authHeader = "Basic " + base64.StdEncoding.EncodeToString([]byte(cfg.Token))
+		} else if username != "" {
+			authHeader = "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+cfg.Token))
+		} else if strings.HasPrefix(cfg.Token, "ATATT") {
+			return nil, fmt.Errorf("Atlassian Cloud API token requires user/email for Basic auth (set 'user: your-email@domain.com' or 'token: your-email@domain.com:api_token')")
 		} else {
 			authHeader = "Bearer " + cfg.Token
 		}

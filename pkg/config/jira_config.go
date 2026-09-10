@@ -11,6 +11,8 @@ import (
 // JiraConfig defines Jira server connection, origin project, team delivery routing, and doc paths.
 type JiraConfig struct {
 	URL           string                    `yaml:"url,omitempty"`
+	User          string                    `yaml:"user,omitempty"`
+	Email         string                    `yaml:"email,omitempty"`
 	Token         string                    `yaml:"token,omitempty"`
 	PAT           string                    `yaml:"pat,omitempty"`
 	OriginProject string                    `yaml:"origin_project,omitempty"`
@@ -57,6 +59,15 @@ func (j *JiraConfig) IsConfigured() bool {
 func (j *JiraConfig) ApplyEnvAndDefaults() {
 	if j.URL == "" {
 		j.URL = os.Getenv("JIRA_URL")
+	}
+	if j.User == "" {
+		j.User = os.Getenv("JIRA_USER")
+	}
+	if j.Email == "" {
+		j.Email = os.Getenv("JIRA_EMAIL")
+	}
+	if j.User == "" && j.Email != "" {
+		j.User = j.Email
 	}
 	if j.Token == "" {
 		j.Token = os.Getenv("JIRA_TOKEN")
