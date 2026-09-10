@@ -297,4 +297,11 @@ func TestJiraConfig_HelpersAndDefaults(t *testing.T) {
 	if defaultTypes.Epic != "Epic" || defaultTypes.Task != "Task" || defaultTypes.Story != "Story" {
 		t.Errorf("unexpected DefaultJiraIssueTypes: %+v", defaultTypes)
 	}
+
+	var withDefaults JiraConfig
+	withDefaults.ApplyEnvAndDefaults()
+	if withDefaults.LinkType != "Relates" {
+		t.Errorf("expected default LinkType 'Relates', got %q", withDefaults.LinkType)
+	}
 }
+

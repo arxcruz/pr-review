@@ -22,13 +22,19 @@ type Client interface {
 	CreateIssue(ctx context.Context, req CreateIssueRequest) (*CreatedIssue, error)
 	CreateEpic(ctx context.Context, req CreateEpicRequest) (*CreatedIssue, error)
 	CreateTask(ctx context.Context, req CreateTaskRequest) (*CreatedIssue, error)
+	CreateIssueLink(ctx context.Context, req CreateIssueLinkRequest) error
+	CreateDependencyLink(ctx context.Context, blockedKey, blockerKey string) error
+	SetParentLink(ctx context.Context, childKey, parentKey string) error
+	LinkStrategicTicket(ctx context.Context, req StrategicLinkRequest) (*StrategicLinkResult, error)
 }
 
 // HTTPClient is the concrete implementation of Client talking to Jira REST API.
 type HTTPClient struct {
-	baseURL    string
-	authHeader string
-	client     *http.Client
+	baseURL         string
+	authHeader      string
+	linkType        string
+	parentLinkField string
+	client          *http.Client
 }
 
 // NewClient creates a new Jira API client from JiraConfig.
@@ -60,10 +66,17 @@ func NewClient(cfg config.JiraConfig) (Client, error) {
 		authHeader = "Bearer " + cfg.PAT
 	}
 
+	linkType := strings.TrimSpace(cfg.LinkType)
+	if linkType == "" {
+		linkType = "Relates"
+	}
+
 	return &HTTPClient{
-		baseURL:    baseURL,
-		authHeader: authHeader,
-		client:     &http.Client{Timeout: 30 * time.Second},
+		baseURL:         baseURL,
+		authHeader:      authHeader,
+		linkType:        linkType,
+		parentLinkField: strings.TrimSpace(cfg.ParentLinkField),
+		client:          &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
 
@@ -560,6 +573,261 @@ func (c *HTTPClient) CreateTask(ctx context.Context, req CreateTaskRequest) (*Cr
 		AcceptanceCriteria: req.AcceptanceCriteria,
 		CustomFields:       req.CustomFields,
 	})
+}
+
+// CreateIssueLink creates a link between two Jira issues via POST /rest/api/2/issueLink.
+func (c *HTTPClient) CreateIssueLink(ctx context.Context, req CreateIssueLinkRequest) error {
+	inwardKey := strings.TrimSpace(req.InwardKey)
+	if inwardKey == "" {
+		return fmt.Errorf("inward issue key is required")
+	}
+	outwardKey := strings.TrimSpace(req.OutwardKey)
+	if outwardKey == "" {
+		return fmt.Errorf("outward issue key is required")
+	}
+	if inwardKey == outwardKey {
+		return fmt.Errorf("cannot link an issue to itself: %s", inwardKey)
+	}
+
+	linkType := strings.TrimSpace(req.LinkType)
+	if linkType == "" {
+		linkType = c.linkType
+	}
+	if linkType == "" {
+		linkType = "Relates"
+	}
+
+	payload := map[string]interface{}{
+		"type": map[string]interface{}{
+			"name": linkType,
+		},
+		"inwardIssue": map[string]interface{}{
+			"key": inwardKey,
+		},
+		"outwardIssue": map[string]interface{}{
+			"key": outwardKey,
+		},
+	}
+
+	if strings.TrimSpace(req.Comment) != "" {
+		payload["comment"] = map[string]interface{}{
+			"body": strings.TrimSpace(req.Comment),
+		}
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to encode request payload: %w", err)
+	}
+
+	reqURL := fmt.Sprintf("%s/rest/api/2/issueLink", c.baseURL)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("failed to build request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	if c.authHeader != "" {
+		httpReq.Header.Set("Authorization", c.authHeader)
+	}
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("jira connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusBadRequest {
+		errDetail := c.parseErrorMessage(respBytes)
+		if errDetail != "" {
+			return fmt.Errorf("invalid jira link request (HTTP 400): %s", errDetail)
+		}
+		return fmt.Errorf("invalid jira link request (HTTP 400)")
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		errDetail := c.parseErrorMessage(respBytes)
+		if errDetail != "" {
+			return fmt.Errorf("jira authentication failed (HTTP %d): %s", resp.StatusCode, errDetail)
+		}
+		return fmt.Errorf("jira authentication failed (HTTP %d): check configured token or pat for %s", resp.StatusCode, c.baseURL)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errDetail := c.parseErrorMessage(respBytes)
+		if errDetail != "" {
+			return fmt.Errorf("jira issue link creation failed (HTTP %d): %s", resp.StatusCode, errDetail)
+		}
+		return fmt.Errorf("jira issue link creation failed (HTTP %d)", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// CreateDependencyLink creates an inter-task dependency link ("Blocks") between issues via POST /rest/api/2/issueLink.
+// blockerKey blocks blockedKey (blockedKey is blocked by blockerKey).
+func (c *HTTPClient) CreateDependencyLink(ctx context.Context, blockedKey, blockerKey string) error {
+	blockedKey = strings.TrimSpace(blockedKey)
+	if blockedKey == "" {
+		return fmt.Errorf("blocked issue key is required")
+	}
+	blockerKey = strings.TrimSpace(blockerKey)
+	if blockerKey == "" {
+		return fmt.Errorf("blocker issue key is required")
+	}
+	if blockedKey == blockerKey {
+		return fmt.Errorf("issue %s cannot depend on itself", blockedKey)
+	}
+
+	return c.CreateIssueLink(ctx, CreateIssueLinkRequest{
+		LinkType:   "Blocks",
+		InwardKey:  blockedKey,
+		OutwardKey: blockerKey,
+	})
+}
+
+// SetParentLink sets the Portfolio parent link or hierarchy parent field on an issue via PUT /rest/api/2/issue/{childKey}.
+func (c *HTTPClient) SetParentLink(ctx context.Context, childKey, parentKey string) error {
+	childKey = strings.TrimSpace(childKey)
+	if childKey == "" {
+		return fmt.Errorf("child issue key is required")
+	}
+	parentKey = strings.TrimSpace(parentKey)
+	if parentKey == "" {
+		return fmt.Errorf("parent issue key is required")
+	}
+	if childKey == parentKey {
+		return fmt.Errorf("issue %s cannot be its own parent", childKey)
+	}
+
+	fields := make(map[string]interface{})
+	if c.parentLinkField != "" {
+		fields[c.parentLinkField] = parentKey
+	} else {
+		fields["parent"] = map[string]interface{}{
+			"key": parentKey,
+		}
+	}
+
+	payload := map[string]interface{}{
+		"fields": fields,
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to encode request payload: %w", err)
+	}
+
+	reqURL := fmt.Sprintf("%s/rest/api/2/issue/%s", c.baseURL, childKey)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, reqURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("failed to build request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	if c.authHeader != "" {
+		httpReq.Header.Set("Authorization", c.authHeader)
+	}
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("jira connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusBadRequest {
+		errDetail := c.parseErrorMessage(respBytes)
+		if errDetail != "" {
+			return fmt.Errorf("invalid jira parent link request (HTTP 400): %s", errDetail)
+		}
+		return fmt.Errorf("invalid jira parent link request (HTTP 400)")
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		errDetail := c.parseErrorMessage(respBytes)
+		if errDetail != "" {
+			return fmt.Errorf("jira authentication failed (HTTP %d): %s", resp.StatusCode, errDetail)
+		}
+		return fmt.Errorf("jira authentication failed (HTTP %d): check configured token or pat for %s", resp.StatusCode, c.baseURL)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errDetail := c.parseErrorMessage(respBytes)
+		if errDetail != "" {
+			return fmt.Errorf("jira set parent link failed (HTTP %d): %s", resp.StatusCode, errDetail)
+		}
+		return fmt.Errorf("jira set parent link failed (HTTP %d)", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// LinkStrategicTicket establishes a link between a delivery child issue and the origin strategic ticket.
+// It attempts to set the Portfolio parent link/hierarchy field first, and falls back to creating an issue link.
+func (c *HTTPClient) LinkStrategicTicket(ctx context.Context, req StrategicLinkRequest) (*StrategicLinkResult, error) {
+	childKey := strings.TrimSpace(req.ChildKey)
+	if childKey == "" {
+		return nil, fmt.Errorf("child issue key is required")
+	}
+	originKey := strings.TrimSpace(req.OriginKey)
+	if originKey == "" {
+		return nil, fmt.Errorf("origin strategic ticket key is required")
+	}
+	if childKey == originKey {
+		return nil, fmt.Errorf("cannot link an issue to itself: %s", childKey)
+	}
+
+	linkType := strings.TrimSpace(req.LinkType)
+	if linkType == "" {
+		linkType = c.linkType
+	}
+	if linkType == "" {
+		linkType = "Relates"
+	}
+
+	var parentErr error
+	if !req.ForceIssueLink {
+		parentErr = c.SetParentLink(ctx, childKey, originKey)
+		if parentErr == nil {
+			return &StrategicLinkResult{
+				ChildKey:  childKey,
+				OriginKey: originKey,
+				Method:    "parent",
+			}, nil
+		}
+	}
+
+	// Fallback to standard issue link
+	linkErr := c.CreateIssueLink(ctx, CreateIssueLinkRequest{
+		LinkType:   linkType,
+		InwardKey:  originKey,
+		OutwardKey: childKey,
+	})
+	if linkErr != nil {
+		if parentErr != nil {
+			return nil, fmt.Errorf("failed to link child %s to origin %s: parent link failed (%v) and fallback issue link failed (%w)", childKey, originKey, parentErr, linkErr)
+		}
+		return nil, fmt.Errorf("failed to link child %s to origin %s: %w", childKey, originKey, linkErr)
+	}
+
+	return &StrategicLinkResult{
+		ChildKey:  childKey,
+		OriginKey: originKey,
+		Method:    "issue_link",
+		LinkType:  linkType,
+	}, nil
 }
 
 func (c *HTTPClient) parseErrorMessage(body []byte) string {

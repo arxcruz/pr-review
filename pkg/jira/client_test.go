@@ -817,3 +817,683 @@ func TestClient_CreateIssue_HTTP401(t *testing.T) {
 	}
 }
 
+func TestClient_CreateIssueLink_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST method, got %s", r.Method)
+		}
+		if r.URL.Path != "/rest/api/2/issueLink" {
+			t.Errorf("expected path /rest/api/2/issueLink, got %s", r.URL.Path)
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer test-pat" {
+			t.Errorf("expected Authorization Bearer test-pat, got %s", authHeader)
+		}
+
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		linkType, ok := payload["type"].(map[string]interface{})
+		if !ok || linkType["name"] != "Relates" {
+			t.Errorf("expected link type Relates, got %v", linkType)
+		}
+
+		inward, ok := payload["inwardIssue"].(map[string]interface{})
+		if !ok || inward["key"] != "ORIGIN-1" {
+			t.Errorf("expected inwardIssue ORIGIN-1, got %v", inward)
+		}
+
+		outward, ok := payload["outwardIssue"].(map[string]interface{})
+		if !ok || outward["key"] != "DELIV-10" {
+			t.Errorf("expected outwardIssue DELIV-10, got %v", outward)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	err = client.CreateIssueLink(context.Background(), CreateIssueLinkRequest{
+		LinkType:   "Relates",
+		InwardKey:  "ORIGIN-1",
+		OutwardKey: "DELIV-10",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClient_CreateIssueLink_WithComment_AndCustomType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		linkType, _ := payload["type"].(map[string]interface{})
+		if linkType["name"] != "implements" {
+			t.Errorf("expected link type implements, got %v", linkType["name"])
+		}
+
+		comment, _ := payload["comment"].(map[string]interface{})
+		if comment["body"] != "Linked during refinement" {
+			t.Errorf("expected comment body 'Linked during refinement', got %v", comment["body"])
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	err = client.CreateIssueLink(context.Background(), CreateIssueLinkRequest{
+		LinkType:   "implements",
+		InwardKey:  "ORIGIN-1",
+		OutwardKey: "DELIV-10",
+		Comment:    "Linked during refinement",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClient_CreateIssueLink_ValidationErrors(t *testing.T) {
+	client, err := NewClient(config.JiraConfig{
+		URL: "https://jira.example.com",
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Missing inward key
+	err = client.CreateIssueLink(ctx, CreateIssueLinkRequest{
+		LinkType:   "Relates",
+		InwardKey:  "",
+		OutwardKey: "DELIV-10",
+	})
+	if err == nil || !strings.Contains(err.Error(), "inward issue key is required") {
+		t.Errorf("expected 'inward issue key is required' error, got: %v", err)
+	}
+
+	// Missing outward key
+	err = client.CreateIssueLink(ctx, CreateIssueLinkRequest{
+		LinkType:   "Relates",
+		InwardKey:  "ORIGIN-1",
+		OutwardKey: "",
+	})
+	if err == nil || !strings.Contains(err.Error(), "outward issue key is required") {
+		t.Errorf("expected 'outward issue key is required' error, got: %v", err)
+	}
+
+	// Same key
+	err = client.CreateIssueLink(ctx, CreateIssueLinkRequest{
+		LinkType:   "Relates",
+		InwardKey:  "ORIGIN-1",
+		OutwardKey: "ORIGIN-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot link an issue to itself") {
+		t.Errorf("expected 'cannot link an issue to itself' error, got: %v", err)
+	}
+}
+
+func TestClient_CreateIssueLink_HTTP400(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"errorMessages": []string{"Issue does not exist or you do not have permission to view it."},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	err = client.CreateIssueLink(context.Background(), CreateIssueLinkRequest{
+		LinkType:   "Relates",
+		InwardKey:  "NOTEXIST-1",
+		OutwardKey: "DELIV-10",
+	})
+	if err == nil {
+		t.Fatal("expected error on HTTP 400, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 400") || !strings.Contains(err.Error(), "Issue does not exist") {
+		t.Errorf("unexpected error format: %v", err)
+	}
+}
+
+func TestClient_CreateDependencyLink_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST method, got %s", r.Method)
+		}
+		if r.URL.Path != "/rest/api/2/issueLink" {
+			t.Errorf("expected path /rest/api/2/issueLink, got %s", r.URL.Path)
+		}
+
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		linkType, ok := payload["type"].(map[string]interface{})
+		if !ok || linkType["name"] != "Blocks" {
+			t.Errorf("expected link type Blocks, got %v", linkType)
+		}
+
+		// blocker blocks blocked:
+		// outwardIssue is blocker (blocks)
+		// inwardIssue is blocked (is blocked by)
+		inward, ok := payload["inwardIssue"].(map[string]interface{})
+		if !ok || inward["key"] != "CORE-20" {
+			t.Errorf("expected inwardIssue CORE-20 (blocked), got %v", inward)
+		}
+
+		outward, ok := payload["outwardIssue"].(map[string]interface{})
+		if !ok || outward["key"] != "CORE-10" {
+			t.Errorf("expected outwardIssue CORE-10 (blocker), got %v", outward)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	// CORE-20 is blocked by CORE-10 (CORE-10 is prerequisite/blocker)
+	err = client.CreateDependencyLink(context.Background(), "CORE-20", "CORE-10")
+	if err != nil {
+		t.Fatalf("unexpected error creating dependency link: %v", err)
+	}
+}
+
+func TestClient_CreateDependencyLink_ValidationErrors(t *testing.T) {
+	client, err := NewClient(config.JiraConfig{
+		URL: "https://jira.example.com",
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Empty blocked key
+	err = client.CreateDependencyLink(ctx, "", "CORE-10")
+	if err == nil || !strings.Contains(err.Error(), "blocked issue key is required") {
+		t.Errorf("expected 'blocked issue key is required' error, got: %v", err)
+	}
+
+	// Empty blocker key
+	err = client.CreateDependencyLink(ctx, "CORE-20", "")
+	if err == nil || !strings.Contains(err.Error(), "blocker issue key is required") {
+		t.Errorf("expected 'blocker issue key is required' error, got: %v", err)
+	}
+
+	// Self dependency
+	err = client.CreateDependencyLink(ctx, "CORE-20", "CORE-20")
+	if err == nil || !strings.Contains(err.Error(), "cannot depend on itself") {
+		t.Errorf("expected 'cannot depend on itself' error, got: %v", err)
+	}
+}
+
+func TestClient_SetParentLink_StandardHierarchy_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT method, got %s", r.Method)
+		}
+		if r.URL.Path != "/rest/api/2/issue/DELIV-10" {
+			t.Errorf("expected path /rest/api/2/issue/DELIV-10, got %s", r.URL.Path)
+		}
+
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		fields, ok := payload["fields"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected fields in payload: %v", payload)
+		}
+
+		parent, ok := fields["parent"].(map[string]interface{})
+		if !ok || parent["key"] != "ORIGIN-100" {
+			t.Errorf("expected parent key ORIGIN-100, got %v", parent)
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	err = client.SetParentLink(context.Background(), "DELIV-10", "ORIGIN-100")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClient_SetParentLink_CustomPortfolioField_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT method, got %s", r.Method)
+		}
+
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		fields := payload["fields"].(map[string]interface{})
+		if fields["customfield_10014"] != "ORIGIN-100" {
+			t.Errorf("expected customfield_10014 ORIGIN-100, got %v", fields["customfield_10014"])
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL:             server.URL,
+		PAT:             "test-pat",
+		ParentLinkField: "customfield_10014",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	err = client.SetParentLink(context.Background(), "DELIV-10", "ORIGIN-100")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClient_SetParentLink_HTTP400_Unsupported(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"errorMessages": []string{"Field 'parent' cannot be set. It is not on the appropriate screen, or unknown."},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	err = client.SetParentLink(context.Background(), "DELIV-10", "ORIGIN-100")
+	if err == nil {
+		t.Fatal("expected error on HTTP 400, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 400") || !strings.Contains(err.Error(), "Field 'parent' cannot be set") {
+		t.Errorf("unexpected error format: %v", err)
+	}
+}
+
+func TestClient_SetParentLink_ValidationErrors(t *testing.T) {
+	client, err := NewClient(config.JiraConfig{
+		URL: "https://jira.example.com",
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Missing child key
+	err = client.SetParentLink(ctx, "", "ORIGIN-100")
+	if err == nil || !strings.Contains(err.Error(), "child issue key is required") {
+		t.Errorf("expected 'child issue key is required' error, got: %v", err)
+	}
+
+	// Missing parent key
+	err = client.SetParentLink(ctx, "DELIV-10", "")
+	if err == nil || !strings.Contains(err.Error(), "parent issue key is required") {
+		t.Errorf("expected 'parent issue key is required' error, got: %v", err)
+	}
+
+	// Same key
+	err = client.SetParentLink(ctx, "DELIV-10", "DELIV-10")
+	if err == nil || !strings.Contains(err.Error(), "cannot be its own parent") {
+		t.Errorf("expected 'cannot be its own parent' error, got: %v", err)
+	}
+}
+
+func TestClient_LinkStrategicTicket_ParentLinkSupported(t *testing.T) {
+	putCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && r.URL.Path == "/rest/api/2/issue/DELIV-10" {
+			putCalled = true
+			var payload map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			fields := payload["fields"].(map[string]interface{})
+			parent := fields["parent"].(map[string]interface{})
+			if parent["key"] != "ORIGIN-100" {
+				t.Errorf("expected parent key ORIGIN-100, got %v", parent["key"])
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	result, err := client.LinkStrategicTicket(context.Background(), StrategicLinkRequest{
+		ChildKey:  "DELIV-10",
+		OriginKey: "ORIGIN-100",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !putCalled {
+		t.Errorf("expected PUT to be called for parent link")
+	}
+	if result.Method != "parent" {
+		t.Errorf("expected method 'parent', got %q", result.Method)
+	}
+	if result.ChildKey != "DELIV-10" || result.OriginKey != "ORIGIN-100" {
+		t.Errorf("unexpected result keys: %+v", result)
+	}
+}
+
+func TestClient_LinkStrategicTicket_FallbackToIssueLink(t *testing.T) {
+	putCalled := false
+	linkCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && r.URL.Path == "/rest/api/2/issue/DELIV-10" {
+			putCalled = true
+			// Simulate Jira instance without Portfolio hierarchy support (HTTP 400)
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"errorMessages": []string{"Field 'parent' cannot be set for issue type Epic"},
+			})
+			return
+		}
+
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/issueLink" {
+			linkCalled = true
+			var payload map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+
+			linkType, _ := payload["type"].(map[string]interface{})
+			if linkType["name"] != "Relates" {
+				t.Errorf("expected fallback link type Relates, got %v", linkType["name"])
+			}
+
+			inward, _ := payload["inwardIssue"].(map[string]interface{})
+			if inward["key"] != "ORIGIN-100" {
+				t.Errorf("expected inward ORIGIN-100, got %v", inward["key"])
+			}
+
+			outward, _ := payload["outwardIssue"].(map[string]interface{})
+			if outward["key"] != "DELIV-10" {
+				t.Errorf("expected outward DELIV-10, got %v", outward["key"])
+			}
+
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	result, err := client.LinkStrategicTicket(context.Background(), StrategicLinkRequest{
+		ChildKey:  "DELIV-10",
+		OriginKey: "ORIGIN-100",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !putCalled {
+		t.Errorf("expected PUT to be attempted first")
+	}
+	if !linkCalled {
+		t.Errorf("expected fallback issueLink POST to be called")
+	}
+	if result.Method != "issue_link" {
+		t.Errorf("expected method 'issue_link', got %q", result.Method)
+	}
+	if result.LinkType != "Relates" {
+		t.Errorf("expected link type 'Relates', got %q", result.LinkType)
+	}
+}
+
+func TestClient_LinkStrategicTicket_ConfiguredLinkTypeFallback(t *testing.T) {
+	linkCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"errorMessages": []string{"parent field not allowed"},
+			})
+			return
+		}
+
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/issueLink" {
+			linkCalled = true
+			var payload map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+
+			linkType, _ := payload["type"].(map[string]interface{})
+			if linkType["name"] != "implements" {
+				t.Errorf("expected configured link type implements, got %v", linkType["name"])
+			}
+
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL:      server.URL,
+		PAT:      "test-pat",
+		LinkType: "implements",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	result, err := client.LinkStrategicTicket(context.Background(), StrategicLinkRequest{
+		ChildKey:  "DELIV-10",
+		OriginKey: "ORIGIN-100",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !linkCalled {
+		t.Errorf("expected issueLink POST")
+	}
+	if result.Method != "issue_link" || result.LinkType != "implements" {
+		t.Errorf("unexpected result: %+v", result)
+	}
+}
+
+func TestClient_LinkStrategicTicket_ForceIssueLink(t *testing.T) {
+	putCalled := false
+	linkCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			putCalled = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/issueLink" {
+			linkCalled = true
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	result, err := client.LinkStrategicTicket(context.Background(), StrategicLinkRequest{
+		ChildKey:       "DELIV-10",
+		OriginKey:      "ORIGIN-100",
+		LinkType:       "relates to",
+		ForceIssueLink: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if putCalled {
+		t.Errorf("expected PUT parent link to be skipped when ForceIssueLink is true")
+	}
+	if !linkCalled {
+		t.Errorf("expected issueLink POST to be called")
+	}
+	if result.Method != "issue_link" || result.LinkType != "relates to" {
+		t.Errorf("unexpected result: %+v", result)
+	}
+}
+
+func TestClient_LinkStrategicTicket_BothFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"errorMessages": []string{"Operation forbidden"},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.JiraConfig{
+		URL: server.URL,
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	_, err = client.LinkStrategicTicket(context.Background(), StrategicLinkRequest{
+		ChildKey:  "DELIV-10",
+		OriginKey: "ORIGIN-100",
+	})
+	if err == nil {
+		t.Fatal("expected error when both fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "parent link failed") || !strings.Contains(err.Error(), "fallback issue link failed") {
+		t.Errorf("expected combined descriptive error, got: %v", err)
+	}
+}
+
+func TestClient_LinkStrategicTicket_ValidationErrors(t *testing.T) {
+	client, err := NewClient(config.JiraConfig{
+		URL: "https://jira.example.com",
+		PAT: "test-pat",
+	})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Missing child key
+	_, err = client.LinkStrategicTicket(ctx, StrategicLinkRequest{
+		ChildKey:  "",
+		OriginKey: "ORIGIN-100",
+	})
+	if err == nil || !strings.Contains(err.Error(), "child issue key is required") {
+		t.Errorf("expected 'child issue key is required' error, got: %v", err)
+	}
+
+	// Missing origin key
+	_, err = client.LinkStrategicTicket(ctx, StrategicLinkRequest{
+		ChildKey:  "DELIV-10",
+		OriginKey: "",
+	})
+	if err == nil || !strings.Contains(err.Error(), "origin strategic ticket key is required") {
+		t.Errorf("expected 'origin strategic ticket key is required' error, got: %v", err)
+	}
+
+	// Same key
+	_, err = client.LinkStrategicTicket(ctx, StrategicLinkRequest{
+		ChildKey:  "ORIGIN-100",
+		OriginKey: "ORIGIN-100",
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot link an issue to itself") {
+		t.Errorf("expected 'cannot link an issue to itself' error, got: %v", err)
+	}
+}
+
+
+
+
+

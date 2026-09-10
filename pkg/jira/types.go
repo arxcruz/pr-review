@@ -76,3 +76,28 @@ type CreatedIssue struct {
 	URL  string `json:"url"`
 }
 
+// CreateIssueLinkRequest represents parameters to link two Jira issues via /rest/api/2/issueLink.
+type CreateIssueLinkRequest struct {
+	LinkType   string `json:"link_type"`   // e.g. "Relates", "implements", "Blocks"
+	InwardKey  string `json:"inward_key"`  // Key of inward issue
+	OutwardKey string `json:"outward_key"` // Key of outward issue
+	Comment    string `json:"comment,omitempty"`
+}
+
+// StrategicLinkRequest represents parameters to link a delivery issue back to an origin strategic ticket.
+type StrategicLinkRequest struct {
+	ChildKey       string `json:"child_key"`
+	OriginKey      string `json:"origin_key"`
+	LinkType       string `json:"link_type,omitempty"`
+	ForceIssueLink bool   `json:"force_issue_link,omitempty"`
+}
+
+// StrategicLinkResult represents the outcome of linking a child issue to an origin strategic ticket.
+type StrategicLinkResult struct {
+	ChildKey  string `json:"child_key"`
+	OriginKey string `json:"origin_key"`
+	Method    string `json:"method"` // "parent" or "issue_link"
+	LinkType  string `json:"link_type,omitempty"`
+}
+
+

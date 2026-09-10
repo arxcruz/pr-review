@@ -15,9 +15,11 @@ type JiraConfig struct {
 	Email         string                    `yaml:"email,omitempty"`
 	Token         string                    `yaml:"token,omitempty"`
 	PAT           string                    `yaml:"pat,omitempty"`
-	OriginProject string                    `yaml:"origin_project,omitempty"`
-	Teams         map[string]JiraTeamConfig `yaml:"teams,omitempty"`
-	DocPaths      []string                  `yaml:"doc_paths,omitempty"`
+	OriginProject   string                    `yaml:"origin_project,omitempty"`
+	LinkType        string                    `yaml:"link_type,omitempty"`
+	ParentLinkField string                    `yaml:"parent_link_field,omitempty"`
+	Teams           map[string]JiraTeamConfig `yaml:"teams,omitempty"`
+	DocPaths        []string                  `yaml:"doc_paths,omitempty"`
 }
 
 // JiraTeamConfig defines delivery project routing and issue types for a team.
@@ -78,6 +80,15 @@ func (j *JiraConfig) ApplyEnvAndDefaults() {
 	}
 	if j.OriginProject == "" {
 		j.OriginProject = os.Getenv("JIRA_ORIGIN_PROJECT")
+	}
+	if j.LinkType == "" {
+		j.LinkType = os.Getenv("JIRA_LINK_TYPE")
+	}
+	if j.LinkType == "" {
+		j.LinkType = "Relates"
+	}
+	if j.ParentLinkField == "" {
+		j.ParentLinkField = os.Getenv("JIRA_PARENT_LINK_FIELD")
 	}
 
 	for i, p := range j.DocPaths {
