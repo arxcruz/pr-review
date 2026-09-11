@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/arxcruz/pr-review/pkg/session"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -88,26 +89,91 @@ func (m Model) renderInterviewView() string {
 	var b strings.Builder
 
 	key := "Unknown"
-	summary := ""
-	status := "new"
-	rounds := 0
+	roundNum := 1
 	if m.activeSnapshot != nil {
 		key = m.activeSnapshot.Key
-		summary = m.activeSnapshot.Ticket.Summary
-		status = m.activeSnapshot.Status
-		rounds = len(m.activeSnapshot.Rounds)
+		roundNum = len(m.activeSnapshot.Rounds) + 1
 	}
 
 	header := titleStyle.Render("Jira Refine") + " " +
 		projectBadgeStyle.Render(key) + " " +
-		headerInfoStyle.Render("Frontier Refinement Interview")
+		headerInfoStyle.Render(fmt.Sprintf("Frontier Refinement Interview (Round %d)", roundNum))
 	b.WriteString(header + "\n\n")
 
-	details := fmt.Sprintf(
-		"Ticket:      %s\nSummary:     %s\nStatus:      %s\nRounds Done: %d\n\nTransition complete! Ready for Refinement Session.\nPress [esc] or [b] to return to Ticket Picker.",
-		key, summary, status, rounds,
-	)
-	b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 8).Render(details) + "\n\n")
+	if m.loading {
+		loadingText := fmt.Sprintf(" %s %s", m.spinner.View(), m.loadingMsg)
+		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(loadingText))
+		b.WriteString("\n\n")
+	} else if m.activeSnapshot != nil && len(m.activeSnapshot.CurrentFrontier) > 0 {
+		var content strings.Builder
+		totalQ := len(m.activeSnapshot.CurrentFrontier)
+		content.WriteString(lipgloss.NewStyle().Bold(true).Render(
+			fmt.Sprintf("=== Refinement Round %d (%d Frontier Questions) ===\n\n", roundNum, totalQ),
+		))
+
+		for i, q := range m.activeSnapshot.CurrentFrontier {
+			cursor := "  "
+			titleSt := questionTitle
+			if i == m.interviewIndex {
+				cursor = "▶ "
+				titleSt = questionActiveTitle
+			}
+
+			content.WriteString(cursor + titleSt.Render(fmt.Sprintf("[%s] %s", q.ID, q.Title)) + "\n")
+			if q.Explanation != "" {
+				content.WriteString("    " + explanationStyle.Render("Why: "+q.Explanation) + "\n")
+			}
+			if len(q.Options) > 0 {
+				content.WriteString("    Options:\n")
+				for idx, opt := range q.Options {
+					content.WriteString(fmt.Sprintf("      [%d] %s\n", idx+1, opt))
+				}
+			}
+			if q.Recommendation != "" {
+				content.WriteString("    " + recommendationStyle.Render("Recommendation: "+q.Recommendation) + "\n")
+			}
+
+			if i == m.interviewIndex && m.interviewEditing {
+				content.WriteString("    Answer: " + m.interviewInput.View() + "\n")
+			} else if q.Answer != "" {
+				content.WriteString("    Answer: " + answerStyle.Render("✓ "+q.Answer) + "\n")
+			} else {
+				content.WriteString("    Answer: " + explanationStyle.Render("(unanswered)") + "\n")
+			}
+			content.WriteString("\n")
+		}
+
+		vp := m.viewport
+		vp.SetContent(content.String())
+		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(vp.View()) + "\n\n")
+	} else if m.activeSnapshot != nil && m.activeSnapshot.Status == session.StatusFinalized {
+		var content strings.Builder
+		content.WriteString(titleStyle.Render("Refinement Session Finalized!") + "\n\n")
+		content.WriteString(fmt.Sprintf("Ticket:   %s\nSummary:  %s\nStatus:   %s\n\n",
+			key, m.activeSnapshot.Ticket.Summary, m.activeSnapshot.Status))
+		if m.activeSnapshot.Tree != nil {
+			content.WriteString(fmt.Sprintf("Decomposition Tree (%d Epics):\n\n", len(m.activeSnapshot.Tree.Epics)))
+			for _, epic := range m.activeSnapshot.Tree.Epics {
+				content.WriteString(fmt.Sprintf("  • [%s] %s\n", epic.Key, epic.Title))
+				for _, task := range epic.Tasks {
+					content.WriteString(fmt.Sprintf("      - %s\n", task.Title))
+				}
+			}
+		}
+		if m.planFile != "" {
+			content.WriteString(fmt.Sprintf("\nPlan saved to: %s\n", m.planFile))
+		}
+		content.WriteString("\nRefinement complete! Press [esc] or [b] to return to Ticket Picker, or [q] to quit.")
+		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(content.String()) + "\n\n")
+	} else {
+		details := fmt.Sprintf(
+			"Ticket:      %s\nSummary:     %s\nStatus:      %s\n\nAll frontier questions resolved or ready for frontier generation.\nPress [ctrl+f] to finalize decomposition, or [r] to generate frontier.",
+			key,
+			m.activeSnapshot.Ticket.Summary,
+			m.activeSnapshot.Status,
+		)
+		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(details) + "\n\n")
+	}
 
 	// Status line
 	statusLine := m.renderStatusLine()
@@ -115,13 +181,30 @@ func (m Model) renderInterviewView() string {
 		b.WriteString(statusLine + "\n")
 	}
 
-	helpLine := fmt.Sprintf("%s %s  •  %s %s",
-		helpKey.Render("[esc/b]"), helpDesc.Render("Back to Picker"),
-		helpKey.Render("[q]"), helpDesc.Render("Quit"),
-	)
+	helpLine := m.renderInterviewHelp()
 	b.WriteString(statusBar.Width(m.width).Render(helpLine))
 
 	return b.String()
+}
+
+func (m Model) renderInterviewHelp() string {
+	if m.interviewEditing {
+		return fmt.Sprintf("%s %s  •  %s %s  •  %s %s",
+			helpKey.Render("[Enter]"), helpDesc.Render("Confirm Answer"),
+			helpKey.Render("[Esc]"), helpDesc.Render("Cancel Edit"),
+			helpKey.Render("[Ctrl+C]"), helpDesc.Render("Quit"),
+		)
+	}
+
+	return fmt.Sprintf("%s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s",
+		helpKey.Render("[↑/↓/j/k]"), helpDesc.Render("Navigate"),
+		helpKey.Render("[Enter/y]"), helpDesc.Render("Accept Recommendation"),
+		helpKey.Render("[e]"), helpDesc.Render("Custom Answer"),
+		helpKey.Render("[Ctrl+S]"), helpDesc.Render("Submit Round"),
+		helpKey.Render("[Ctrl+F]"), helpDesc.Render("Finalize"),
+		helpKey.Render("[esc/b]"), helpDesc.Render("Back"),
+		helpKey.Render("[q]"), helpDesc.Render("Quit"),
+	)
 }
 
 func (m Model) renderResumeModal() string {

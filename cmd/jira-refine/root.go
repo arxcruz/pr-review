@@ -279,9 +279,29 @@ func runTUI(opts *rootOptions, initialKey string) error {
 		aiEngine, _ = factory.GetEngine(opts.provider)
 	}
 
+	var docContext string
+	if len(cfg.Jira.DocPaths) > 0 {
+		scanner := docscan.NewScanner(docscan.DefaultConfig())
+		scanRes, scanErr := scanner.Scan(cfg.Jira.DocPaths)
+		if scanErr == nil && len(scanRes.Documents) > 0 {
+			docContext = scanner.FormatPromptContext(scanRes.Documents)
+		}
+	}
+
 	modelOpts := []refinetui.Option{
 		refinetui.WithAIEngine(aiEngine),
 		refinetui.WithPlanFile(opts.planFile),
+		refinetui.WithFrontierOptions(refine.FrontierOptions{
+			DocContext: docContext,
+			Model:      opts.model,
+		}),
+	}
+	if aiEngine != nil {
+		router := refine.NewRouter(&cfg.Jira,
+			refine.WithAIEngine(aiEngine),
+			refine.WithModel(opts.model),
+		)
+		modelOpts = append(modelOpts, refinetui.WithRouter(router))
 	}
 	if initialKey != "" {
 		modelOpts = append(modelOpts, refinetui.WithInitialKey(initialKey))

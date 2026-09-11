@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/arxcruz/pr-review/pkg/ai"
 	"github.com/arxcruz/pr-review/pkg/config"
 	"github.com/arxcruz/pr-review/pkg/jira"
 	"github.com/arxcruz/pr-review/pkg/session"
@@ -462,3 +463,392 @@ func TestPicker_WithInitialKey(t *testing.T) {
 		t.Fatalf("expected active snapshot for INIT-1")
 	}
 }
+
+func TestInterview_FrontierQuestionsViewRendering(t *testing.T) {
+	m, _, store := setupTestModel(t)
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusInProgress,
+		Ticket: jira.Ticket{
+			Key:     "STRAT-1",
+			Summary: "Strategic Initiative",
+		},
+		CurrentFrontier: []session.Question{
+			{
+				ID:             "Q1",
+				Title:          "Authentication Strategy",
+				Explanation:    "Need to decide on auth flow",
+				Options:        []string{"Basic Auth", "OAuth2 with PKCE", "SAML SSO"},
+				Recommendation: "OAuth2 with PKCE",
+			},
+			{
+				ID:             "Q2",
+				Title:          "Database Engine",
+				Explanation:    "Need primary datastore",
+				Options:        []string{"PostgreSQL", "DynamoDB"},
+				Recommendation: "PostgreSQL",
+			},
+		},
+	}
+	_ = store.Save(snap)
+
+	m.activeSnapshot = snap
+	m.screen = ScreenInterview
+	m.loading = false
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	if m.CurrentQuestionIndex() != 0 {
+		t.Fatalf("expected initial question index 0, got %d", m.CurrentQuestionIndex())
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "Authentication Strategy") {
+		t.Fatalf("expected question title 'Authentication Strategy' in view, got: %s", view)
+	}
+	if !strings.Contains(view, "OAuth2 with PKCE") {
+		t.Fatalf("expected recommendation 'OAuth2 with PKCE' in view, got: %s", view)
+	}
+	if !strings.Contains(view, "Database Engine") {
+		t.Fatalf("expected question 'Database Engine' in view, got: %s", view)
+	}
+	if !strings.Contains(view, "Round 1") {
+		t.Fatalf("expected 'Round 1' in view, got: %s", view)
+	}
+}
+
+func TestInterview_NavigationAndAcceptRecommendation(t *testing.T) {
+	m, _, store := setupTestModel(t)
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusInProgress,
+		CurrentFrontier: []session.Question{
+			{
+				ID:             "Q1",
+				Title:          "Auth Strategy",
+				Options:        []string{"Basic", "OAuth2"},
+				Recommendation: "OAuth2",
+			},
+			{
+				ID:             "Q2",
+				Title:          "Database Engine",
+				Options:        []string{"PostgreSQL", "DynamoDB"},
+				Recommendation: "PostgreSQL",
+			},
+		},
+	}
+	_ = store.Save(snap)
+	m.activeSnapshot = snap
+	m.screen = ScreenInterview
+	m.loading = false
+
+	// Navigate down with 'j'
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(Model)
+	if m.CurrentQuestionIndex() != 1 {
+		t.Fatalf("expected index 1 after 'j', got %d", m.CurrentQuestionIndex())
+	}
+
+	// Navigate up with 'k'
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(Model)
+	if m.CurrentQuestionIndex() != 0 {
+		t.Fatalf("expected index 0 after 'k', got %d", m.CurrentQuestionIndex())
+	}
+
+	// Press 'enter' or 'y' to accept recommendation on Q1
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(Model)
+
+	if m.ActiveSnapshot().CurrentFrontier[0].Answer != "OAuth2" {
+		t.Fatalf("expected Answer to be 'OAuth2', got %q", m.ActiveSnapshot().CurrentFrontier[0].Answer)
+	}
+	// Verify auto-advance to next question index
+	if m.CurrentQuestionIndex() != 1 {
+		t.Fatalf("expected index auto-advanced to 1, got %d", m.CurrentQuestionIndex())
+	}
+}
+
+func TestInterview_OptionNumberSelection(t *testing.T) {
+	m, _, store := setupTestModel(t)
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusInProgress,
+		CurrentFrontier: []session.Question{
+			{
+				ID:             "Q1",
+				Title:          "Auth Strategy",
+				Options:        []string{"Basic", "OAuth2", "SAML"},
+				Recommendation: "OAuth2",
+			},
+		},
+	}
+	_ = store.Save(snap)
+	m.activeSnapshot = snap
+	m.screen = ScreenInterview
+	m.loading = false
+
+	// Press '1' to select option 1 "Basic"
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	m = updated.(Model)
+
+	if m.ActiveSnapshot().CurrentFrontier[0].Answer != "Basic" {
+		t.Fatalf("expected answer 'Basic', got %q", m.ActiveSnapshot().CurrentFrontier[0].Answer)
+	}
+}
+
+func TestInterview_CustomAnswerEditing(t *testing.T) {
+	m, _, store := setupTestModel(t)
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusInProgress,
+		CurrentFrontier: []session.Question{
+			{
+				ID:             "Q1",
+				Title:          "Custom Field",
+				Recommendation: "DefaultVal",
+			},
+		},
+	}
+	_ = store.Save(snap)
+	m.activeSnapshot = snap
+	m.screen = ScreenInterview
+	m.loading = false
+
+	// Press 'e' to start editing
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+
+	if !m.InterviewEditing() {
+		t.Fatalf("expected InterviewEditing to be true")
+	}
+
+	// Type custom answer
+	for _, r := range "My Custom Architecture" {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+
+	// Press Enter to submit answer
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	if m.InterviewEditing() {
+		t.Fatalf("expected InterviewEditing to be false after Enter")
+	}
+	if m.ActiveSnapshot().CurrentFrontier[0].Answer != "My Custom Architecture" {
+		t.Fatalf("expected custom answer, got %q", m.ActiveSnapshot().CurrentFrontier[0].Answer)
+	}
+}
+
+type mockAIEngine struct {
+	responses []string
+	callCount int
+	err       error
+}
+
+func (m *mockAIEngine) Name() string { return "mock-ai" }
+func (m *mockAIEngine) Review(ctx context.Context, req ai.ReviewRequest) (*ai.ReviewResult, error) {
+	return nil, nil
+}
+func (m *mockAIEngine) Generate(ctx context.Context, req ai.PromptRequest) (*ai.GenerateResult, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	resp := "[]"
+	if m.callCount < len(m.responses) {
+		resp = m.responses[m.callCount]
+	}
+	m.callCount++
+	return &ai.GenerateResult{
+		Provider: "mock-ai",
+		Content:  resp,
+	}, nil
+}
+
+func TestInterview_SubmitRound_AdvancesAndRecomputesFrontier(t *testing.T) {
+	cfg := &config.Config{
+		Jira: config.JiraConfig{
+			OriginProject: "STRAT",
+		},
+	}
+	client := &mockJiraClient{}
+	store := session.NewFileStore(t.TempDir())
+
+	aiMock := &mockAIEngine{
+		responses: []string{
+			`[
+				{
+					"id": "Q2",
+					"title": "Token Storage",
+					"explanation": "Where to store tokens",
+					"options": ["Redis", "Postgres"],
+					"recommendation": "Redis"
+				}
+			]`,
+		},
+	}
+
+	m := NewModel(cfg, client, store, WithAIEngine(aiMock))
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusInProgress,
+		CurrentFrontier: []session.Question{
+			{
+				ID:             "Q1",
+				Title:          "Auth Strategy",
+				Recommendation: "OAuth2",
+				Answer:         "OAuth2",
+			},
+		},
+	}
+	_ = store.Save(snap)
+	m.activeSnapshot = snap
+	m.screen = ScreenInterview
+	m.loading = false
+
+	// Press Ctrl+S to submit round
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = updated.(Model)
+
+	if !m.Loading() {
+		t.Fatalf("expected loading to be true while generating next frontier")
+	}
+	if cmd == nil {
+		t.Fatalf("expected non-nil cmd for frontier generation")
+	}
+
+	// Verify loading spinner view
+	view := m.View()
+	if !strings.Contains(view, "generating next frontier") && !strings.Contains(view, "Generating") && !strings.Contains(view, "Analyzing") {
+		t.Fatalf("expected loading message in view, got: %s", view)
+	}
+
+	// Execute command
+	msg := cmd()
+	if batchMsg, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batchMsg {
+			if c != nil {
+				mMsg := c()
+				updated, _ = m.Update(mMsg)
+				m = updated.(Model)
+			}
+		}
+	} else {
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+	}
+
+	if m.Loading() {
+		t.Fatalf("expected loading to be false after completion")
+	}
+	if len(m.ActiveSnapshot().Rounds) != 1 {
+		t.Fatalf("expected 1 completed round in snapshot, got %d", len(m.ActiveSnapshot().Rounds))
+	}
+	if len(m.ActiveSnapshot().CurrentFrontier) != 1 {
+		t.Fatalf("expected 1 new question in CurrentFrontier, got %d", len(m.ActiveSnapshot().CurrentFrontier))
+	}
+	if m.ActiveSnapshot().CurrentFrontier[0].ID != "Q2" {
+		t.Fatalf("expected question Q2, got %s", m.ActiveSnapshot().CurrentFrontier[0].ID)
+	}
+	if m.CurrentQuestionIndex() != 0 {
+		t.Fatalf("expected question index reset to 0, got %d", m.CurrentQuestionIndex())
+	}
+}
+
+func TestInterview_FinalizeRefinementShortcut(t *testing.T) {
+	cfg := &config.Config{
+		Jira: config.JiraConfig{
+			OriginProject: "STRAT",
+		},
+	}
+	client := &mockJiraClient{}
+	store := session.NewFileStore(t.TempDir())
+
+	aiMock := &mockAIEngine{
+		responses: []string{
+			`{
+				"epics": [
+					{
+						"id": "EPIC-1",
+						"key": "EPIC-1",
+						"title": "Core Auth Epic",
+						"description": "Authentication decomposition",
+						"tasks": [
+							{
+								"id": "TASK-1",
+								"title": "Implement OAuth2 handler",
+								"description": "Handler task"
+							}
+						]
+					}
+				]
+			}`,
+		},
+	}
+
+	m := NewModel(cfg, client, store, WithAIEngine(aiMock))
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusInProgress,
+		CurrentFrontier: []session.Question{
+			{
+				ID:             "Q1",
+				Title:          "Auth Strategy",
+				Recommendation: "OAuth2",
+				Answer:         "OAuth2",
+			},
+		},
+	}
+	_ = store.Save(snap)
+	m.activeSnapshot = snap
+	m.screen = ScreenInterview
+	m.loading = false
+
+	// Press Ctrl+F to finalize refinement anytime
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	m = updated.(Model)
+
+	if !m.Loading() {
+		t.Fatalf("expected loading while synthesizing tree")
+	}
+	if cmd == nil {
+		t.Fatalf("expected non-nil cmd for finalize")
+	}
+
+	// Execute command
+	msg := cmd()
+	if batchMsg, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batchMsg {
+			if c != nil {
+				mMsg := c()
+				updated, _ = m.Update(mMsg)
+				m = updated.(Model)
+			}
+		}
+	} else {
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+	}
+
+	if m.Loading() {
+		t.Fatalf("expected loading to be false after finalization")
+	}
+	if m.ActiveSnapshot().Status != session.StatusFinalized {
+		t.Fatalf("expected status finalized, got %s", m.ActiveSnapshot().Status)
+	}
+	if m.ActiveSnapshot().Tree == nil || len(m.ActiveSnapshot().Tree.Epics) != 1 {
+		t.Fatalf("expected 1 epic in tree")
+	}
+	if m.ActiveSnapshot().Tree.Epics[0].Title != "Core Auth Epic" {
+		t.Fatalf("expected title 'Core Auth Epic', got %s", m.ActiveSnapshot().Tree.Epics[0].Title)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "Finalized") && !strings.Contains(view, "finalized") {
+		t.Fatalf("expected finalized in view, got: %s", view)
+	}
+}
+
+
+

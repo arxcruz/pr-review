@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -49,6 +50,16 @@ type snapshotCheckResultMsg struct {
 	err       error
 }
 
+type frontierGeneratedMsg struct {
+	questions []session.Question
+	err       error
+}
+
+type refinementFinalizedMsg struct {
+	tree *session.DecompositionTree
+	err  error
+}
+
 // ResumeModalState manages the state of the resume-or-fresh confirmation dialog.
 type ResumeModalState struct {
 	Active   bool
@@ -64,6 +75,7 @@ type Model struct {
 	sessionStore session.Store
 	aiEngine     ai.Engine
 	refineEngine *refine.Engine
+	router       *refine.Router
 	planFile     string
 
 	// UI layout & screen
@@ -85,7 +97,12 @@ type Model struct {
 	resumeModal ResumeModalState
 
 	// Active session (Refinement interview)
-	activeSnapshot *session.Snapshot
+	activeSnapshot   *session.Snapshot
+	interviewIndex   int
+	interviewEditing bool
+	interviewInput   textinput.Model
+	viewport         viewport.Model
+	frontierOpts     refine.FrontierOptions
 
 	// Status messages
 	statusMsg   string
@@ -102,6 +119,20 @@ func WithAIEngine(eng ai.Engine) Option {
 		if eng != nil {
 			m.refineEngine = refine.NewEngine(eng)
 		}
+	}
+}
+
+// WithRouter sets the delivery project router on the model.
+func WithRouter(r *refine.Router) Option {
+	return func(m *Model) {
+		m.router = r
+	}
+}
+
+// WithFrontierOptions sets frontier generation options.
+func WithFrontierOptions(opts refine.FrontierOptions) Option {
+	return func(m *Model) {
+		m.frontierOpts = opts
 	}
 }
 
@@ -130,6 +161,13 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 	ti.CharLimit = 64
 	ti.Width = 50
 
+	interviewTi := textinput.New()
+	interviewTi.Placeholder = "Enter custom answer or edit..."
+	interviewTi.CharLimit = 256
+	interviewTi.Width = 60
+
+	vp := viewport.New(80, 20)
+
 	columns := []table.Column{
 		{Title: "Key", Width: 14},
 		{Title: "Summary", Width: 46},
@@ -157,18 +195,20 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 	tbl.SetStyles(tStyle)
 
 	m := Model{
-		cfg:          cfg,
-		jiraClient:   client,
-		sessionStore: store,
-		screen:       ScreenPicker,
-		pickerFocus:  FocusTable,
-		table:        tbl,
-		input:        ti,
-		spinner:      s,
-		loading:      true,
-		loadingMsg:   "Loading recent tickets from Origin Project...",
-		width:        80,
-		height:       24,
+		cfg:            cfg,
+		jiraClient:     client,
+		sessionStore:   store,
+		screen:         ScreenPicker,
+		pickerFocus:    FocusTable,
+		table:          tbl,
+		input:          ti,
+		interviewInput: interviewTi,
+		viewport:       vp,
+		spinner:        s,
+		loading:        true,
+		loadingMsg:     "Loading recent tickets from Origin Project...",
+		width:          80,
+		height:         24,
 	}
 
 	for _, opt := range opts {
@@ -183,6 +223,8 @@ func (m Model) Screen() Screen                        { return m.screen }
 func (m Model) Loading() bool                         { return m.loading }
 func (m Model) ResumeModalActive() bool               { return m.resumeModal.Active }
 func (m Model) ActiveSnapshot() *session.Snapshot     { return m.activeSnapshot }
+func (m Model) CurrentQuestionIndex() int             { return m.interviewIndex }
+func (m Model) InterviewEditing() bool                { return m.interviewEditing }
 func (m Model) Tickets() []jira.RecentTicket          { return m.tickets }
 func (m Model) PickerFocus() PickerFocus              { return m.pickerFocus }
 func (m Model) InputValue() string                    { return m.input.Value() }
@@ -276,6 +318,67 @@ func (m Model) checkSnapshotCmd(key string, recentTicket *jira.RecentTicket) tea
 	}
 }
 
+func (m Model) generateFrontierCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.refineEngine == nil {
+			return frontierGeneratedMsg{err: errors.New("refinement AI engine not configured")}
+		}
+		if m.activeSnapshot == nil {
+			return frontierGeneratedMsg{err: errors.New("no active session snapshot")}
+		}
+		ctx := context.Background()
+		questions, err := m.refineEngine.GenerateFrontier(ctx, m.activeSnapshot, m.frontierOpts)
+		return frontierGeneratedMsg{
+			questions: questions,
+			err:       err,
+		}
+	}
+}
+
+func (m Model) finalizeRefinementCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.activeSnapshot == nil {
+			return refinementFinalizedMsg{err: errors.New("no active session snapshot")}
+		}
+		ctx := context.Background()
+		var tree *session.DecompositionTree
+		if m.activeSnapshot.Tree != nil {
+			tree = m.activeSnapshot.Tree
+		} else if m.refineEngine != nil {
+			var err error
+			tree, err = m.refineEngine.GenerateDecompositionTree(ctx, m.activeSnapshot, refine.DecompositionOptions{
+				DocContext:  m.frontierOpts.DocContext,
+				Guidelines:  m.frontierOpts.Guidelines,
+				Model:       m.frontierOpts.Model,
+				Temperature: m.frontierOpts.Temperature,
+			})
+			if err != nil {
+				return refinementFinalizedMsg{err: err}
+			}
+		}
+
+		if m.router != nil && m.activeSnapshot.Tree != nil {
+			_ = m.router.Route(ctx, m.activeSnapshot)
+		}
+
+		m.activeSnapshot.Status = session.StatusFinalized
+		if m.sessionStore != nil {
+			_ = m.sessionStore.Save(m.activeSnapshot)
+		}
+
+		if m.planFile != "" && m.activeSnapshot.Tree != nil {
+			var jiraCfg *config.JiraConfig
+			if m.cfg != nil {
+				jiraCfg = &m.cfg.Jira
+			}
+			planMd := refine.FormatPlanMarkdown(m.activeSnapshot, jiraCfg)
+			_ = refine.WritePlanFile(m.planFile, planMd)
+		}
+
+		return refinementFinalizedMsg{tree: tree}
+	}
+}
+
 // Update handles incoming messages and updates state
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -323,10 +426,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.statusMsg = fmt.Sprintf("Found existing refinement session for %s", msg.key)
 			m.statusIsErr = false
-		} else {
-			// No snapshot -> initialize fresh snapshot and transition to refinement interview
-			m.startFreshSession(msg.key, msg.ticket)
+			return m, nil
 		}
+		// No snapshot -> initialize fresh snapshot and transition to refinement interview
+		cmd := m.startFreshSession(msg.key, msg.ticket)
+		return m, cmd
+
+	case frontierGeneratedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Error generating frontier: %v", msg.err)
+			m.statusIsErr = true
+		} else {
+			if m.sessionStore != nil && m.activeSnapshot != nil {
+				_ = m.sessionStore.Save(m.activeSnapshot)
+			}
+			m.interviewIndex = 0
+			if len(msg.questions) == 0 {
+				m.statusMsg = "All frontier questions resolved. The refinement frontier is empty."
+			} else {
+				roundNum := 1
+				if m.activeSnapshot != nil {
+					roundNum = len(m.activeSnapshot.Rounds) + 1
+				}
+				m.statusMsg = fmt.Sprintf("Round %d generated (%d question(s))", roundNum, len(msg.questions))
+			}
+			m.statusIsErr = false
+		}
+		return m, nil
+
+	case refinementFinalizedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Error finalizing refinement: %v", msg.err)
+			m.statusIsErr = true
+		} else {
+			epicCount := 0
+			if msg.tree != nil {
+				epicCount = len(msg.tree.Epics)
+			}
+			m.statusMsg = fmt.Sprintf("Refinement session finalized. Created %d epic(s).", epicCount)
+			m.statusIsErr = false
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		k := msg.String()
@@ -349,14 +491,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeSnapshot = m.resumeModal.Snapshot
 				m.resumeModal.Active = false
 				m.screen = ScreenInterview
+				if len(m.activeSnapshot.CurrentFrontier) == 0 && m.refineEngine != nil && m.activeSnapshot.Status != session.StatusFinalized {
+					m.loading = true
+					m.loadingMsg = fmt.Sprintf("Analyzing Strategic Ticket [%s] and generating frontier questions...", m.activeSnapshot.Key)
+					return m, tea.Batch(m.spinner.Tick, m.generateFrontierCmd())
+				}
+				m.loading = false
 				m.statusMsg = fmt.Sprintf("Resumed refinement session for %s", m.activeSnapshot.Key)
 				m.statusIsErr = false
 				return m, nil
 
 			case "f", "F":
 				// Start fresh: overwrite with fresh snapshot
-				m.startFreshSession(m.resumeModal.Key, m.resumeModal.Ticket)
-				return m, nil
+				cmd := m.startFreshSession(m.resumeModal.Key, m.resumeModal.Ticket)
+				return m, cmd
 
 			case "esc", "q", "n", "N":
 				// Cancel modal
@@ -429,8 +577,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 
-		// Interview screen handling (for transitions and back navigation)
+		// Interview screen handling
 		if m.screen == ScreenInterview {
+			if m.interviewEditing {
+				switch k {
+				case "esc":
+					m.interviewEditing = false
+					m.interviewInput.Blur()
+					return m, nil
+
+				case "enter":
+					if m.activeSnapshot != nil && m.interviewIndex >= 0 && m.interviewIndex < len(m.activeSnapshot.CurrentFrontier) {
+						val := strings.TrimSpace(m.interviewInput.Value())
+						m.activeSnapshot.CurrentFrontier[m.interviewIndex].Answer = val
+						if m.sessionStore != nil {
+							_ = m.sessionStore.Save(m.activeSnapshot)
+						}
+						if m.interviewIndex < len(m.activeSnapshot.CurrentFrontier)-1 {
+							m.interviewIndex++
+						}
+					}
+					m.interviewEditing = false
+					m.interviewInput.Blur()
+					return m, nil
+
+				default:
+					var cmd tea.Cmd
+					m.interviewInput, cmd = m.interviewInput.Update(msg)
+					return m, cmd
+				}
+			}
+
+			// Non-editing navigation mode
 			switch k {
 			case "esc", "b":
 				// Return to picker
@@ -438,8 +616,91 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "Returned to ticket picker"
 				m.statusIsErr = false
 				return m, nil
+
 			case "q":
 				return m, tea.Quit
+
+			case "up", "k":
+				if m.interviewIndex > 0 {
+					m.interviewIndex--
+				}
+				return m, nil
+
+			case "down", "j":
+				if m.activeSnapshot != nil && m.interviewIndex < len(m.activeSnapshot.CurrentFrontier)-1 {
+					m.interviewIndex++
+				}
+				return m, nil
+
+			case "enter", "y":
+				if m.activeSnapshot != nil && m.interviewIndex >= 0 && m.interviewIndex < len(m.activeSnapshot.CurrentFrontier) {
+					q := &m.activeSnapshot.CurrentFrontier[m.interviewIndex]
+					if q.Recommendation != "" {
+						q.Answer = q.Recommendation
+						if m.sessionStore != nil {
+							_ = m.sessionStore.Save(m.activeSnapshot)
+						}
+						if m.interviewIndex < len(m.activeSnapshot.CurrentFrontier)-1 {
+							m.interviewIndex++
+						}
+						m.statusMsg = fmt.Sprintf("Accepted recommendation for [%s]", q.ID)
+						m.statusIsErr = false
+					}
+				}
+				return m, nil
+
+			case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+				if m.activeSnapshot != nil && m.interviewIndex >= 0 && m.interviewIndex < len(m.activeSnapshot.CurrentFrontier) {
+					q := &m.activeSnapshot.CurrentFrontier[m.interviewIndex]
+					optIdx := int(k[0] - '1')
+					if optIdx >= 0 && optIdx < len(q.Options) {
+						q.Answer = q.Options[optIdx]
+						if m.sessionStore != nil {
+							_ = m.sessionStore.Save(m.activeSnapshot)
+						}
+						if m.interviewIndex < len(m.activeSnapshot.CurrentFrontier)-1 {
+							m.interviewIndex++
+						}
+						m.statusMsg = fmt.Sprintf("Selected option for [%s]", q.ID)
+						m.statusIsErr = false
+						return m, nil
+					}
+				}
+
+			case "e":
+				if m.activeSnapshot != nil && m.interviewIndex >= 0 && m.interviewIndex < len(m.activeSnapshot.CurrentFrontier) {
+					q := &m.activeSnapshot.CurrentFrontier[m.interviewIndex]
+					m.interviewEditing = true
+					m.interviewInput.SetValue(q.Answer)
+					if q.Recommendation != "" {
+						m.interviewInput.Placeholder = fmt.Sprintf("Recommendation: %s", q.Recommendation)
+					}
+					m.interviewInput.Focus()
+					return m, textinput.Blink
+				}
+
+			case "ctrl+s":
+				if m.activeSnapshot != nil {
+					m.activeSnapshot.AdvanceRound()
+					if m.sessionStore != nil {
+						_ = m.sessionStore.Save(m.activeSnapshot)
+					}
+					if m.refineEngine != nil {
+						m.loading = true
+						m.loadingMsg = fmt.Sprintf("Analyzing responses & generating next frontier round %d...", len(m.activeSnapshot.Rounds)+1)
+						return m, tea.Batch(m.spinner.Tick, m.generateFrontierCmd())
+					}
+					m.statusMsg = fmt.Sprintf("Round %d submitted", len(m.activeSnapshot.Rounds))
+					m.statusIsErr = false
+					return m, nil
+				}
+
+			case "ctrl+f":
+				if m.activeSnapshot != nil {
+					m.loading = true
+					m.loadingMsg = "Synthesizing Decomposition Tree from settled refinement rounds..."
+					return m, tea.Batch(m.spinner.Tick, m.finalizeRefinementCmd())
+				}
 			}
 		}
 	}
@@ -464,7 +725,7 @@ func (m *Model) populateTable() {
 	m.table.SetRows(rows)
 }
 
-func (m *Model) startFreshSession(key string, ticket *jira.Ticket) {
+func (m *Model) startFreshSession(key string, ticket *jira.Ticket) tea.Cmd {
 	snap := &session.Snapshot{
 		Key:    key,
 		Status: session.StatusNew,
@@ -478,8 +739,15 @@ func (m *Model) startFreshSession(key string, ticket *jira.Ticket) {
 	m.activeSnapshot = snap
 	m.resumeModal.Active = false
 	m.screen = ScreenInterview
+	if m.refineEngine != nil {
+		m.loading = true
+		m.loadingMsg = fmt.Sprintf("Analyzing Strategic Ticket [%s] and generating frontier questions...", key)
+		return tea.Batch(m.spinner.Tick, m.generateFrontierCmd())
+	}
+	m.loading = false
 	m.statusMsg = fmt.Sprintf("Started refinement session for %s", key)
 	m.statusIsErr = false
+	return nil
 }
 
 func (m *Model) updateLayout() {
@@ -509,4 +777,11 @@ func (m *Model) updateLayout() {
 		{Title: "Status", Width: statusWidth},
 		{Title: "Assignee", Width: assigneeWidth},
 	})
+
+	vpHeight := m.height - 10
+	if vpHeight < 5 {
+		vpHeight = 5
+	}
+	m.viewport.Width = m.width - 4
+	m.viewport.Height = vpHeight
 }

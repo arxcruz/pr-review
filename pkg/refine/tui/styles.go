@@ -77,4 +77,25 @@ var (
 			Background(headerBg).
 			Padding(0, 1).
 			MarginBottom(1)
+
+	// Interview question styles
+	questionTitle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FFFFFF"))
+
+	questionActiveTitle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(primaryColor)
+
+	recommendationStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(secondaryColor)
+
+	explanationStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#A0A0A0"))
+
+	answerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(secondaryColor)
 )
+
