@@ -225,9 +225,12 @@ func (m Model) renderInterviewView() string {
 			content.WriteString("\n")
 		}
 
-		actionButtons := fmt.Sprintf(" %s    %s",
-			activeBoxStyle.Render("[ Submit Round (Ctrl+S) ]"),
-			boxStyle.Render("[ Finalize Refinement (Ctrl+F) ]"),
+		actionButtons := lipgloss.NewStyle().PaddingLeft(1).Render(
+			lipgloss.JoinHorizontal(lipgloss.Top,
+				activeBoxStyle.Render("[ Submit Round (Ctrl+S) ]"),
+				"    ",
+				boxStyle.Render("[ Finalize Refinement (Ctrl+F) ]"),
+			),
 		)
 		tail := actionButtons + "\n\n" + plainTail
 		tailLines := strings.Count(tail, "\n") + 1
