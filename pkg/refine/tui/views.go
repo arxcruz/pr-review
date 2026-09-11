@@ -104,7 +104,7 @@ func (m Model) renderInterviewView() string {
 	b.WriteString(header + "\n\n")
 
 	details := fmt.Sprintf(
-		"Ticket:      %s\nSummary:     %s\nStatus:      %s\nRounds Done: %d\n\nTransition complete! Ready for refinement frontier loop.\nPress [esc] or [b] to return to Ticket Picker.",
+		"Ticket:      %s\nSummary:     %s\nStatus:      %s\nRounds Done: %d\n\nTransition complete! Ready for Refinement Session.\nPress [esc] or [b] to return to Ticket Picker.",
 		key, summary, status, rounds,
 	)
 	b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 8).Render(details) + "\n\n")

@@ -49,12 +49,6 @@ type snapshotCheckResultMsg struct {
 	err       error
 }
 
-type ticketDetailsLoadedMsg struct {
-	ticket   *jira.Ticket
-	snapshot *session.Snapshot
-	err      error
-}
-
 // ResumeModalState manages the state of the resume-or-fresh confirmation dialog.
 type ResumeModalState struct {
 	Active   bool
@@ -249,10 +243,17 @@ func (m Model) checkSnapshotCmd(key string, recentTicket *jira.RecentTicket) tea
 			ticket = &existingSnap.Ticket
 		} else if m.jiraClient != nil {
 			fetched, err := m.jiraClient.GetTicket(ctx, key)
-			if err != nil {
+			if err != nil && recentTicket != nil {
+				ticket = &jira.Ticket{
+					Key:     recentTicket.Key,
+					Summary: recentTicket.Summary,
+					Status:  recentTicket.Status,
+				}
+			} else if err != nil {
 				return snapshotCheckResultMsg{key: key, err: fmt.Errorf("failed to fetch ticket %s: %w", key, err)}
+			} else {
+				ticket = fetched
 			}
-			ticket = fetched
 		} else if recentTicket != nil {
 			ticket = &jira.Ticket{
 				Key:     recentTicket.Key,
@@ -324,20 +325,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsErr = false
 		} else {
 			// No snapshot -> initialize fresh snapshot and transition to refinement interview
-			snap := &session.Snapshot{
-				Key:    msg.key,
-				Status: session.StatusNew,
-			}
-			if msg.ticket != nil {
-				snap.Ticket = *msg.ticket
-			}
-			if m.sessionStore != nil {
-				_ = m.sessionStore.Save(snap)
-			}
-			m.activeSnapshot = snap
-			m.screen = ScreenInterview
-			m.statusMsg = fmt.Sprintf("Started refinement session for %s", msg.key)
-			m.statusIsErr = false
+			m.startFreshSession(msg.key, msg.ticket)
 		}
 
 	case tea.KeyMsg:
@@ -346,6 +334,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Global quit
 		if k == "ctrl+c" {
 			return m, tea.Quit
+		}
+
+		// Prevent re-triggering while a network operation is in progress
+		if m.loading && (k == "enter" || k == "r") {
+			return m, nil
 		}
 
 		// Modal handling
@@ -362,21 +355,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "f", "F":
 				// Start fresh: overwrite with fresh snapshot
-				freshSnap := &session.Snapshot{
-					Key:    m.resumeModal.Key,
-					Status: session.StatusNew,
-				}
-				if m.resumeModal.Ticket != nil {
-					freshSnap.Ticket = *m.resumeModal.Ticket
-				}
-				if m.sessionStore != nil {
-					_ = m.sessionStore.Save(freshSnap)
-				}
-				m.activeSnapshot = freshSnap
-				m.resumeModal.Active = false
-				m.screen = ScreenInterview
-				m.statusMsg = fmt.Sprintf("Started fresh refinement session for %s", m.resumeModal.Key)
-				m.statusIsErr = false
+				m.startFreshSession(m.resumeModal.Key, m.resumeModal.Ticket)
 				return m, nil
 
 			case "esc", "q", "n", "N":
@@ -485,6 +464,24 @@ func (m *Model) populateTable() {
 	m.table.SetRows(rows)
 }
 
+func (m *Model) startFreshSession(key string, ticket *jira.Ticket) {
+	snap := &session.Snapshot{
+		Key:    key,
+		Status: session.StatusNew,
+	}
+	if ticket != nil {
+		snap.Ticket = *ticket
+	}
+	if m.sessionStore != nil {
+		_ = m.sessionStore.Save(snap)
+	}
+	m.activeSnapshot = snap
+	m.resumeModal.Active = false
+	m.screen = ScreenInterview
+	m.statusMsg = fmt.Sprintf("Started refinement session for %s", key)
+	m.statusIsErr = false
+}
+
 func (m *Model) updateLayout() {
 	tableHeight := m.height - 12
 	if tableHeight < 5 {
@@ -497,4 +494,19 @@ func (m *Model) updateLayout() {
 		contentWidth = 40
 	}
 	m.input.Width = contentWidth - 4
+
+	// Dynamically scale table columns
+	keyWidth := 12
+	statusWidth := 14
+	assigneeWidth := 16
+	summaryWidth := contentWidth - keyWidth - statusWidth - assigneeWidth - 6
+	if summaryWidth < 18 {
+		summaryWidth = 18
+	}
+	m.table.SetColumns([]table.Column{
+		{Title: "Key", Width: keyWidth},
+		{Title: "Summary", Width: summaryWidth},
+		{Title: "Status", Width: statusWidth},
+		{Title: "Assignee", Width: assigneeWidth},
+	})
 }
