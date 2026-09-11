@@ -13,6 +13,7 @@ import (
 
 	"github.com/arxcruz/pr-review/pkg/jira"
 	"github.com/arxcruz/pr-review/pkg/session"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestRootCmd_Dump_Success(t *testing.T) {
@@ -937,6 +938,84 @@ jira:
 	}
 	if loaded.Tree.Epics[0].Tasks[0].Key == "" || loaded.Tree.Epics[0].Tasks[1].Key == "" {
 		t.Errorf("expected task keys in snapshot")
+	}
+}
+
+func TestRootCmd_TUI_Flag_Success(t *testing.T) {
+	oldRunner := runTUIProgram
+	defer func() { runTUIProgram = oldRunner }()
+
+	tuiRan := false
+	runTUIProgram = func(m tea.Model) error {
+		tuiRan = true
+		return nil
+	}
+
+	tmpDir := t.TempDir()
+	cfgFile := filepath.Join(tmpDir, "config.yaml")
+	cfgContent := `
+jira:
+  url: "https://jira.example.com"
+  pat: "test-pat"
+  origin_project: "STRAT"
+  teams:
+    backend:
+      delivery_project: "DELIV"
+  doc_paths:
+    - "` + tmpDir + `"
+`
+	_ = os.WriteFile(cfgFile, []byte(cfgContent), 0644)
+
+	cmd := newRootCmd()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"--tui", "--config", cfgFile, "--session-dir", filepath.Join(tmpDir, "sessions")})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("expected execute success, got: %v", err)
+	}
+	if !tuiRan {
+		t.Fatalf("expected runTUIProgram to have been called")
+	}
+}
+
+func TestRootCmd_TUI_Subcommand_WithKey(t *testing.T) {
+	oldRunner := runTUIProgram
+	defer func() { runTUIProgram = oldRunner }()
+
+	tuiRan := false
+	runTUIProgram = func(m tea.Model) error {
+		tuiRan = true
+		return nil
+	}
+
+	tmpDir := t.TempDir()
+	cfgFile := filepath.Join(tmpDir, "config.yaml")
+	cfgContent := `
+jira:
+  url: "https://jira.example.com"
+  pat: "test-pat"
+  origin_project: "STRAT"
+  teams:
+    backend:
+      delivery_project: "DELIV"
+  doc_paths:
+    - "` + tmpDir + `"
+`
+	_ = os.WriteFile(cfgFile, []byte(cfgContent), 0644)
+
+	cmd := newRootCmd()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"tui", "STRAT-42", "--config", cfgFile, "--session-dir", filepath.Join(tmpDir, "sessions")})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("expected execute success, got: %v", err)
+	}
+	if !tuiRan {
+		t.Fatalf("expected runTUIProgram to have been called")
 	}
 }
 
