@@ -73,6 +73,8 @@ const (
 	StatusInProgress = "in-progress"
 	// StatusFinalized represents a completed session where all frontier questions have been resolved.
 	StatusFinalized = "finalized"
+	// StatusSynced represents a completed session whose decomposition tree has been synchronized with remote Jira.
+	StatusSynced = "synced"
 )
 
 // AddUserRequirement appends an answered requirement round and advances the snapshot.

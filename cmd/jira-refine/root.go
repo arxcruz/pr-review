@@ -20,6 +20,8 @@ type rootOptions struct {
 	dump       bool
 	plan       bool
 	planFile   string
+	sync       bool
+	yes        bool
 	provider   string
 	model      string
 	sessionDir string
@@ -94,6 +96,39 @@ into structured, actionable delivery items across team projects.`,
 						return fmt.Errorf("failed to write plan file: %w", err)
 					}
 					fmt.Fprintf(cmd.OutOrStdout(), "\nPlan successfully written to %s\n", opts.planFile)
+				}
+				return nil
+			}
+
+			if opts.sync {
+				if !hasArg {
+					return fmt.Errorf("ticket key is required when using --sync")
+				}
+				key := strings.TrimSpace(args[0])
+				cfg, client, err := initJiraClient(opts.configFile)
+				if err != nil {
+					return err
+				}
+
+				store := session.NewFileStore(opts.sessionDir)
+				snap, err := store.Load(key)
+				if err != nil {
+					return fmt.Errorf("failed to load session snapshot: %w", err)
+				}
+
+				syncer := refine.NewSyncer(client, store, &cfg.Jira)
+				result, err := syncer.Sync(cmd.Context(), snap, refine.SyncOptions{
+					In:          cmd.InOrStdin(),
+					Out:         cmd.OutOrStdout(),
+					AutoConfirm: opts.yes,
+				})
+				if err != nil {
+					return fmt.Errorf("failed to synchronize with jira: %w", err)
+				}
+
+				if result != nil && !result.Aborted {
+					summaryTable := refine.FormatSyncSummaryTable(result)
+					fmt.Fprint(cmd.OutOrStdout(), summaryTable)
 				}
 				return nil
 			}
@@ -190,6 +225,8 @@ into structured, actionable delivery items across team projects.`,
 	cmd.Flags().BoolVar(&opts.dump, "dump", false, "Dump parsed ticket summary to terminal")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Output formatted markdown plan summary for ticket session")
 	cmd.Flags().StringVar(&opts.planFile, "plan-file", "", "Path to write formatted plan markdown file")
+	cmd.Flags().BoolVar(&opts.sync, "sync", false, "Synchronize decomposition tree with remote Jira instance")
+	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Skip confirmation prompt when executing Jira synchronization")
 	cmd.Flags().StringVar(&opts.provider, "provider", "", "AI provider to use (ollama, openai, anthropic, gemini, etc.)")
 	cmd.Flags().StringVar(&opts.model, "model", "", "AI model override")
 	cmd.Flags().StringVar(&opts.sessionDir, "session-dir", "", "Path to directory for persisting session snapshots")

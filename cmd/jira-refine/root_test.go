@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -652,6 +653,293 @@ jira:
 		t.Errorf("expected error mentioning no decomposition tree, got: %v", err)
 	}
 }
+
+func TestRootCmd_Sync_MissingKey(t *testing.T) {
+	buf := new(bytes.Buffer)
+	cmd := newRootCmd()
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"--sync"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when key is missing with --sync, got nil")
+	}
+	if !strings.Contains(err.Error(), "ticket key is required") {
+		t.Errorf("expected error mentioning ticket key is required, got: %v", err)
+	}
+}
+
+func TestRootCmd_Sync_SnapshotNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgFile := filepath.Join(tmpDir, "config.yaml")
+	cfgContent := `
+jira:
+  url: "https://jira.example.com"
+  pat: "test-pat"
+  origin_project: "STRAT"
+  teams:
+    backend:
+      delivery_project: "DELIV"
+  doc_paths:
+    - "` + tmpDir + `"
+`
+	_ = os.WriteFile(cfgFile, []byte(cfgContent), 0644)
+
+	cmd := newRootCmd()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"STRAT-404", "--sync", "--config", cfgFile, "--session-dir", filepath.Join(tmpDir, "sessions")})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for missing snapshot, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to load session snapshot") {
+		t.Errorf("expected snapshot load error, got: %v", err)
+	}
+}
+
+func TestRootCmd_Sync_UnroutedTree_Error(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionDir := filepath.Join(tmpDir, "sessions")
+	_ = os.MkdirAll(sessionDir, 0755)
+
+	snap := session.Snapshot{
+		Version: 1,
+		Key:     "STRAT-77",
+		Status:  "in-progress",
+		Ticket: jira.Ticket{
+			Key:     "STRAT-77",
+			Summary: "Unrouted Tree Ticket",
+		},
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:    "EPIC-1",
+					Title: "Unrouted Epic",
+				},
+			},
+		},
+	}
+	snapData, _ := json.MarshalIndent(snap, "", "  ")
+	_ = os.WriteFile(filepath.Join(sessionDir, "STRAT-77.json"), snapData, 0644)
+
+	cfgFile := filepath.Join(tmpDir, "config.yaml")
+	cfgContent := `
+jira:
+  url: "https://jira.example.com"
+  pat: "test-pat"
+  origin_project: "STRAT"
+  teams:
+    backend:
+      delivery_project: "DELIV"
+  doc_paths:
+    - "` + tmpDir + `"
+`
+	_ = os.WriteFile(cfgFile, []byte(cfgContent), 0644)
+
+	cmd := newRootCmd()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"STRAT-77", "--sync", "--yes", "--config", cfgFile, "--session-dir", sessionDir})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error on unrouted tree, got nil")
+	}
+	if !strings.Contains(err.Error(), "not routed to a delivery project") {
+		t.Errorf("expected routing verification error, got: %v", err)
+	}
+}
+
+func TestRootCmd_Sync_UserAborted(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionDir := filepath.Join(tmpDir, "sessions")
+	_ = os.MkdirAll(sessionDir, 0755)
+
+	snap := session.Snapshot{
+		Version: 1,
+		Key:     "STRAT-88",
+		Status:  "finalized",
+		Ticket: jira.Ticket{
+			Key:     "STRAT-88",
+			Summary: "Aborted Sync Ticket",
+		},
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:              "EPIC-1",
+					Title:           "Backend Architecture",
+					DeliveryProject: "DELIV",
+					Tasks: []session.DecompositionTask{
+						{
+							ID:              "TASK-1",
+							Title:           "Database Layer",
+							DeliveryProject: "DELIV",
+						},
+					},
+				},
+			},
+		},
+	}
+	snapData, _ := json.MarshalIndent(snap, "", "  ")
+	_ = os.WriteFile(filepath.Join(sessionDir, "STRAT-88.json"), snapData, 0644)
+
+	cfgFile := filepath.Join(tmpDir, "config.yaml")
+	cfgContent := `
+jira:
+  url: "https://jira.example.com"
+  pat: "test-pat"
+  origin_project: "STRAT"
+  teams:
+    backend:
+      delivery_project: "DELIV"
+  doc_paths:
+    - "` + tmpDir + `"
+`
+	_ = os.WriteFile(cfgFile, []byte(cfgContent), 0644)
+
+	inBuf := strings.NewReader("n\n")
+	outBuf := new(bytes.Buffer)
+
+	cmd := newRootCmd()
+	cmd.SetIn(inBuf)
+	cmd.SetOut(outBuf)
+	cmd.SetErr(outBuf)
+	cmd.SetArgs([]string{"STRAT-88", "--sync", "--config", cfgFile, "--session-dir", sessionDir})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("expected nil error on clean abort, got: %v", err)
+	}
+
+	out := outBuf.String()
+	if !strings.Contains(out, "Sync aborted by user") {
+		t.Errorf("expected 'Sync aborted by user' in stdout, got:\n%s", out)
+	}
+}
+
+func TestRootCmd_Sync_Success(t *testing.T) {
+	issueSeq := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/issue" {
+			issueSeq++
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			key := fmt.Sprintf("DELIV-%d", issueSeq)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":   fmt.Sprintf("%d", issueSeq),
+				"key":  key,
+				"self": fmt.Sprintf("https://jira.example.com/rest/api/2/issue/%d", issueSeq),
+			})
+			return
+		}
+		if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/rest/api/2/issue/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/issueLink" {
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	sessionDir := filepath.Join(tmpDir, "sessions")
+	_ = os.MkdirAll(sessionDir, 0755)
+
+	snap := session.Snapshot{
+		Version: 1,
+		Key:     "STRAT-500",
+		Status:  "finalized",
+		Ticket: jira.Ticket{
+			Key:     "STRAT-500",
+			Summary: "Full Sync Architecture",
+		},
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:              "EPIC-1",
+					Title:           "Identity Management",
+					DeliveryProject: "DELIV",
+					Type:            "Epic",
+					Tasks: []session.DecompositionTask{
+						{
+							ID:              "TASK-2",
+							Title:           "OAuth Flow",
+							DeliveryProject: "DELIV",
+							Type:            "Story",
+							DependsOn:       []string{"TASK-1"},
+						},
+						{
+							ID:              "TASK-1",
+							Title:           "JWT Signing Service",
+							DeliveryProject: "DELIV",
+							Type:            "Task",
+						},
+					},
+				},
+			},
+		},
+	}
+	snapData, _ := json.MarshalIndent(snap, "", "  ")
+	_ = os.WriteFile(filepath.Join(sessionDir, "STRAT-500.json"), snapData, 0644)
+
+	cfgFile := filepath.Join(tmpDir, "config.yaml")
+	cfgContent := `
+jira:
+  url: "` + server.URL + `"
+  pat: "test-pat"
+  origin_project: "STRAT"
+  teams:
+    backend:
+      delivery_project: "DELIV"
+  doc_paths:
+    - "` + tmpDir + `"
+`
+	_ = os.WriteFile(cfgFile, []byte(cfgContent), 0644)
+
+	outBuf := new(bytes.Buffer)
+	cmd := newRootCmd()
+	cmd.SetOut(outBuf)
+	cmd.SetErr(outBuf)
+	cmd.SetArgs([]string{"STRAT-500", "--sync", "--yes", "--config", cfgFile, "--session-dir", sessionDir})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Fatalf("expected execute success, got: %v", err)
+	}
+
+	out := outBuf.String()
+	if !strings.Contains(out, "Synchronized Jira Issues for STRAT-500") {
+		t.Errorf("expected summary table header in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "DELIV-1") || !strings.Contains(out, "DELIV-2") || !strings.Contains(out, "DELIV-3") {
+		t.Errorf("expected created keys DELIV-1, DELIV-2, DELIV-3 in output, got:\n%s", out)
+	}
+
+	// Verify snapshot updated on disk
+	store := session.NewFileStore(sessionDir)
+	loaded, err := store.Load("STRAT-500")
+	if err != nil {
+		t.Fatalf("failed to load updated snapshot: %v", err)
+	}
+	if loaded.Status != session.StatusSynced {
+		t.Errorf("expected status %s, got %s", session.StatusSynced, loaded.Status)
+	}
+	if loaded.Tree.Epics[0].Key == "" {
+		t.Errorf("expected epic key in snapshot")
+	}
+	if loaded.Tree.Epics[0].Tasks[0].Key == "" || loaded.Tree.Epics[0].Tasks[1].Key == "" {
+		t.Errorf("expected task keys in snapshot")
+	}
+}
+
 
 
 
