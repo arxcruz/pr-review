@@ -426,7 +426,14 @@ func (m Model) renderTreeView() string {
 	}
 
 	var treeContent strings.Builder
-	treeContent.WriteString(lipgloss.NewStyle().Bold(true).Render("=== Decomposition Tree Hierarchy ===\n\n"))
+	// The header's spacing must come from plain concatenation, not an
+	// embedded "\n\n" inside Render(): lipgloss pads that trailing blank
+	// line to the header's width but doesn't add a real newline after it,
+	// so the next WriteString (the first tree row) lands glued onto the end
+	// of that padded whitespace instead of starting a fresh line — shifting
+	// the first row right by the header's width. Same bug class as the
+	// interview screen's round header (see da327d4/4b721c7).
+	treeContent.WriteString(lipgloss.NewStyle().Bold(true).Render("=== Decomposition Tree Hierarchy ===") + "\n\n")
 
 	for i, item := range items {
 		cursor := "  "
@@ -479,7 +486,7 @@ func (m Model) renderTreeView() string {
 	// Selected Item Details
 	if m.treeIndex >= 0 && m.treeIndex < len(items) {
 		curr := items[m.treeIndex]
-		treeContent.WriteString(lipgloss.NewStyle().Bold(true).Render("── Item Details ──\n"))
+		treeContent.WriteString(lipgloss.NewStyle().Bold(true).Render("── Item Details ──") + "\n")
 		kindStr := "Epic"
 		if curr.Kind == TreeItemTask {
 			kindStr = "Task/Story"

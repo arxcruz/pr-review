@@ -1792,3 +1792,78 @@ func TestSyncView_SuccessActionButtons_RenderSideBySide(t *testing.T) {
 		t.Fatalf("expected 'Return to Ticket Picker' and 'Return to Tree Review' buttons on the same rendered line, got:\n%s", view)
 	}
 }
+
+// firstLineWith returns the first rendered line containing needle, or "" if
+// no line contains it.
+func firstLineWith(view, needle string) string {
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, needle) {
+			return line
+		}
+	}
+	return ""
+}
+
+// contentColumn returns how many spaces of padding sit between a box's left
+// border ('│') and the first non-space character of that row's content.
+// Every row inside the same box shares the identical border+padding prefix,
+// so this isolates a row's own leading indentation from the box chrome that
+// leadingSpaces(line) (counting from index 0) would otherwise always see as
+// zero, since every line starts with '│' regardless of content indentation.
+func contentColumn(line string) int {
+	idx := strings.IndexRune(line, '│')
+	if idx == -1 {
+		return 0
+	}
+	rest := line[idx+len("│"):]
+	col := 0
+	for _, r := range rest {
+		if r != ' ' {
+			break
+		}
+		col++
+	}
+	return col
+}
+
+func TestTreeView_FirstRow_NotIndentedPastHeader(t *testing.T) {
+	// Regression test: the hierarchy header and "Item Details" header used
+	// to embed their trailing "\n"/"\n\n" inside Render(), which lipgloss
+	// pads to the header's width without a real trailing newline — gluing
+	// the very next row onto the end of that padding and shifting it right
+	// by the header's width. Same bug class as the interview screen's round
+	// header (da327d4 / 4b721c7).
+	m, _, _ := setupTestModelForSync(t)
+	m.loading = false
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	view := m.View()
+
+	headerLine := firstLineWith(view, "Decomposition Tree Hierarchy")
+	if headerLine == "" {
+		t.Fatalf("expected hierarchy header in view, got:\n%s", view)
+	}
+	epicLine := firstLineWith(view, "EPIC-1")
+	if epicLine == "" {
+		t.Fatalf("expected epic row in view, got:\n%s", view)
+	}
+	// Both rows sit inside the same bordered box, sharing an identical
+	// border+padding prefix, so a correctly laid out epic row's own content
+	// starts at the same column as the header's.
+	if got, want := contentColumn(epicLine), contentColumn(headerLine); got != want {
+		t.Fatalf("epic row starts at column %d, expected to match the header's column %d, view:\n%s", got, want, view)
+	}
+
+	detailsHeaderLine := firstLineWith(view, "Item Details")
+	if detailsHeaderLine == "" {
+		t.Fatalf("expected Item Details header in view, got:\n%s", view)
+	}
+	typeLine := firstLineWith(view, "Type:")
+	if typeLine == "" {
+		t.Fatalf("expected 'Type:' row in view, got:\n%s", view)
+	}
+	if got, want := contentColumn(typeLine), contentColumn(detailsHeaderLine); got != want {
+		t.Fatalf("'Type:' row starts at column %d, expected to match the Item Details header's column %d, view:\n%s", got, want, view)
+	}
+}
