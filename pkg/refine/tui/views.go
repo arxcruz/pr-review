@@ -7,7 +7,23 @@ import (
 	"github.com/arxcruz/pr-review/pkg/refine"
 	"github.com/arxcruz/pr-review/pkg/session"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
+
+// truncateTitle shortens title to fit within width columns, appending an
+// ellipsis when truncated, so a rendered row never wraps onto a second line.
+func truncateTitle(title string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	return runewidth.Truncate(title, width, "…")
+}
+
+// titleBudget returns how many columns remain for a row's title once its
+// rendered prefix and suffix are subtracted from the available row width.
+func titleBudget(totalWidth int, prefix, suffix string) int {
+	return totalWidth - lipgloss.Width(prefix) - lipgloss.Width(suffix)
+}
 
 // View renders the terminal UI according to current screen and modal states.
 func (m Model) View() string {
@@ -124,7 +140,9 @@ func (m Model) renderInterviewView() string {
 				titleSt = questionActiveTitle
 			}
 
-			content.WriteString(cursor + titleSt.Render(fmt.Sprintf("[%s] %s", q.ID, q.Title)) + "\n")
+			idBadge := fmt.Sprintf("[%s] ", q.ID)
+			titleWidth := titleBudget(m.width-4, cursor+idBadge, "")
+			content.WriteString(cursor + idBadge + titleSt.Render(truncateTitle(q.Title, titleWidth)) + "\n")
 			if q.Explanation != "" {
 				content.WriteString("    " + explanationStyle.Render("Why: "+q.Explanation) + "\n")
 			}
@@ -297,20 +315,28 @@ func (m Model) renderTreeView() string {
 			projBadge = "[Unassigned]"
 		}
 
+		idBadge := fmt.Sprintf("[%s]", item.ID)
+
 		if item.Kind == TreeItemEpic {
+			prefix := fmt.Sprintf("%s%s %s ", cursor, check, idBadge)
+			suffix := " " + projBadge
+			titleWidth := titleBudget(m.width-4, prefix, suffix)
 			treeContent.WriteString(fmt.Sprintf("%s%s %s %s %s\n",
 				cursor,
 				check,
-				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#58A6FF")).Render(fmt.Sprintf("[%s]", item.ID)),
-				itemStyle.Render(item.Title),
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#58A6FF")).Render(idBadge),
+				itemStyle.Render(truncateTitle(item.Title, titleWidth)),
 				lipgloss.NewStyle().Foreground(lipgloss.Color("#8B949E")).Render(projBadge),
 			))
 		} else {
+			prefix := fmt.Sprintf("%s  └─ %s %s ", cursor, check, idBadge)
+			suffix := " " + projBadge
+			titleWidth := titleBudget(m.width-4, prefix, suffix)
 			treeContent.WriteString(fmt.Sprintf("%s  └─ %s %s %s %s\n",
 				cursor,
 				check,
-				lipgloss.NewStyle().Foreground(lipgloss.Color("#7EE787")).Render(fmt.Sprintf("[%s]", item.ID)),
-				itemStyle.Render(item.Title),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#7EE787")).Render(idBadge),
+				itemStyle.Render(truncateTitle(item.Title, titleWidth)),
 				lipgloss.NewStyle().Foreground(lipgloss.Color("#8B949E")).Render(projBadge),
 			))
 		}
