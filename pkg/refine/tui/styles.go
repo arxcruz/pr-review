@@ -98,4 +98,3 @@ var (
 			Bold(true).
 			Foreground(secondaryColor)
 )
-

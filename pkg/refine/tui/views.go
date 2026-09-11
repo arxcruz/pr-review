@@ -39,6 +39,8 @@ func (m Model) View() string {
 	switch m.screen {
 	case ScreenPicker:
 		content = m.renderPickerView()
+	case ScreenOverview:
+		content = m.renderOverviewView()
 	case ScreenInterview:
 		content = m.renderInterviewView()
 	case ScreenTree:
@@ -94,7 +96,7 @@ func (m Model) renderPickerView() string {
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#D0D0D0")).Render(inputHeader),
 		m.input.View(),
 	)
-	inputStr := inputBoxStyle.Width(m.width - 4).Render(inputContent) + "\n"
+	inputStr := inputBoxStyle.Width(m.width-4).Render(inputContent) + "\n"
 
 	// Status line
 	statusStr := ""
@@ -140,6 +142,73 @@ func (m Model) renderPickerView() string {
 	b.WriteString(tail)
 
 	return b.String()
+}
+
+func (m Model) renderOverviewView() string {
+	var b strings.Builder
+
+	key := m.overview.Key
+	if key == "" {
+		key = "Unknown"
+	}
+	summary := ""
+	description := ""
+	status := ""
+	if m.overview.Ticket != nil {
+		summary = m.overview.Ticket.Summary
+		description = strings.TrimSpace(m.overview.Ticket.Description)
+		status = m.overview.Ticket.Status
+	}
+
+	header := titleStyle.Render("Jira Refine") + " " +
+		projectBadgeStyle.Render(key) + " " +
+		headerInfoStyle.Render("Ticket Overview")
+	head := header + "\n\n"
+	b.WriteString(head)
+
+	var content strings.Builder
+	content.WriteString(fmt.Sprintf("Summary:  %s\nStatus:   %s\n\n", summary, status))
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("Description:") + "\n")
+	if description == "" {
+		content.WriteString(explanationStyle.Render("(no description provided)") + "\n")
+	} else {
+		content.WriteString(description + "\n")
+	}
+	content.WriteString("\n")
+
+	if isThinDescription(description) {
+		content.WriteString(lipgloss.NewStyle().Bold(true).Foreground(warningColor).Render(
+			"⚠ This ticket's description is thin — consider adding a Context Note below to improve refinement quality.",
+		) + "\n\n")
+	}
+
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("Context Note (optional):") + "\n")
+	content.WriteString(explanationStyle.Render("Background the description is missing — business context, constraints, prior decisions.") + "\n")
+
+	statusStr := ""
+	if statusLine := m.renderStatusLine(); statusLine != "" {
+		statusStr = statusLine + "\n"
+	}
+	helpStr := statusBar.Width(m.width).Render(m.renderOverviewHelp())
+	plainTail := statusStr + helpStr
+
+	const boxChrome = 2
+	headLines := strings.Count(head, "\n")
+	tailLines := strings.Count(plainTail, "\n") + 1
+	boxHeight := clampMin(m.height-headLines-tailLines-boxChrome, 5)
+
+	b.WriteString(boxStyle.Width(m.width-4).Height(boxHeight).Render(content.String()+"\n"+m.contextNoteArea.View()) + "\n")
+	b.WriteString(plainTail)
+
+	return b.String()
+}
+
+func (m Model) renderOverviewHelp() string {
+	return fmt.Sprintf("%s %s  •  %s %s  •  %s %s",
+		helpKey.Render("[Ctrl+S]"), helpDesc.Render("Submit Note & Continue"),
+		helpKey.Render("[Esc]"), helpDesc.Render("Skip & Continue"),
+		helpKey.Render("[Ctrl+G]"), helpDesc.Render("Back to Picker"),
+	)
 }
 
 func (m Model) renderInterviewView() string {
@@ -239,7 +308,7 @@ func (m Model) renderInterviewView() string {
 		vp := m.viewport
 		vp.Height = boxHeight
 		vp.SetContent(content.String())
-		b.WriteString(boxStyle.Width(m.width - 4).Height(boxHeight).Render(vp.View()) + "\n")
+		b.WriteString(boxStyle.Width(m.width-4).Height(boxHeight).Render(vp.View()) + "\n")
 		b.WriteString(actionButtons + "\n\n")
 	} else if m.activeSnapshot != nil && m.activeSnapshot.Status == session.StatusFinalized {
 		var content strings.Builder
@@ -261,7 +330,7 @@ func (m Model) renderInterviewView() string {
 		content.WriteString("\nRefinement complete! Press [esc] or [b] to return to Ticket Picker, or [q] to quit.")
 		tailLines := strings.Count(plainTail, "\n") + 1
 		boxHeight := clampMin(m.height-headLines-tailLines-boxChrome, 5)
-		b.WriteString(boxStyle.Width(m.width - 4).Height(boxHeight).Render(content.String()) + "\n\n")
+		b.WriteString(boxStyle.Width(m.width-4).Height(boxHeight).Render(content.String()) + "\n\n")
 	} else {
 		details := fmt.Sprintf(
 			"Ticket:      %s\nSummary:     %s\nStatus:      %s\n\nAll frontier questions resolved or ready for frontier generation.\nPress [ctrl+f] to finalize decomposition, or [r] to generate frontier.",
@@ -271,7 +340,7 @@ func (m Model) renderInterviewView() string {
 		)
 		tailLines := strings.Count(plainTail, "\n") + 1
 		boxHeight := clampMin(m.height-headLines-tailLines-boxChrome, 5)
-		b.WriteString(boxStyle.Width(m.width - 4).Height(boxHeight).Render(details) + "\n\n")
+		b.WriteString(boxStyle.Width(m.width-4).Height(boxHeight).Render(details) + "\n\n")
 	}
 
 	b.WriteString(plainTail)
@@ -351,7 +420,7 @@ func (m Model) renderTreeView() string {
 	items := m.TreeItems()
 	if len(items) == 0 {
 		emptyMsg := "No decomposition tree available. Press [esc] or [b] to return to interview."
-		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(emptyMsg) + "\n\n")
+		b.WriteString(boxStyle.Width(m.width-4).Height(m.height-10).Render(emptyMsg) + "\n\n")
 		b.WriteString(statusBar.Width(m.width).Render(m.renderTreeHelp()))
 		return b.String()
 	}
@@ -435,7 +504,7 @@ func (m Model) renderTreeView() string {
 	if treeHeight < 5 {
 		treeHeight = 5
 	}
-	b.WriteString(boxStyle.Width(m.width - 4).Height(treeHeight).Render(vp.View()) + "\n")
+	b.WriteString(boxStyle.Width(m.width-4).Height(treeHeight).Render(vp.View()) + "\n")
 
 	if m.treeEditing && m.treeIndex >= 0 && m.treeIndex < len(items) {
 		curr := items[m.treeIndex]
@@ -449,7 +518,7 @@ func (m Model) renderTreeView() string {
 			m.treeInput.View(),
 			explanationStyle.Render("Press [Enter] to Save, [Esc] to Cancel"),
 		)
-		b.WriteString(activeBoxStyle.Width(m.width - 4).Render(editBox) + "\n")
+		b.WriteString(activeBoxStyle.Width(m.width-4).Render(editBox) + "\n")
 	}
 
 	// Action buttons
@@ -651,7 +720,7 @@ func (m Model) renderSyncView() string {
 		if vpHeight < 5 {
 			vpHeight = 5
 		}
-		b.WriteString(boxStyle.Width(m.width - 4).Height(vpHeight).Render(vp.View()) + "\n\n")
+		b.WriteString(boxStyle.Width(m.width-4).Height(vpHeight).Render(vp.View()) + "\n\n")
 
 		actionButtons := fmt.Sprintf(" %s    %s",
 			activeBoxStyle.Render("[ Return to Ticket Picker (P) ]"),
@@ -708,11 +777,11 @@ func (m Model) renderSyncView() string {
 		if vpHeight < 5 {
 			vpHeight = 5
 		}
-		b.WriteString(boxStyle.Width(m.width - 4).Height(vpHeight).Render(vp.View()) + "\n")
+		b.WriteString(boxStyle.Width(m.width-4).Height(vpHeight).Render(vp.View()) + "\n")
 
 		if m.syncState == SyncStateFailed && m.syncError != nil {
 			errText := fmt.Sprintf("✖ Error during synchronization:\n%s\n\nPress [r] to Retry failed item, [b/esc] to return to Decomposition Tree, [q] to Quit.", m.syncError.Error())
-			b.WriteString(activeBoxStyle.Width(m.width - 4).BorderForeground(accentColor).Render(errText) + "\n\n")
+			b.WriteString(activeBoxStyle.Width(m.width-4).BorderForeground(accentColor).Render(errText) + "\n\n")
 		} else {
 			b.WriteString("\n")
 		}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,10 +26,22 @@ type Screen int
 
 const (
 	ScreenPicker Screen = iota
+	ScreenOverview
 	ScreenInterview
 	ScreenTree
 	ScreenSync
 )
+
+// thinDescriptionThreshold is the character count below which a Strategic
+// Ticket's description is flagged as too sparse to ground refinement, so the
+// overview screen nudges the user toward adding a Context Note.
+const thinDescriptionThreshold = 50
+
+// isThinDescription reports whether a (trimmed) ticket description is too
+// sparse to ground refinement on its own.
+func isThinDescription(description string) bool {
+	return len(description) < thinDescriptionThreshold
+}
 
 // SyncState indicates the current progress state of synchronization.
 type SyncState int
@@ -88,11 +101,11 @@ type recentTicketsLoadedMsg struct {
 }
 
 type snapshotCheckResultMsg struct {
-	key       string
-	ticket    *jira.Ticket
-	snapshot  *session.Snapshot
-	hasSnap   bool
-	err       error
+	key      string
+	ticket   *jira.Ticket
+	snapshot *session.Snapshot
+	hasSnap  bool
+	err      error
 }
 
 type frontierGeneratedMsg struct {
@@ -127,6 +140,14 @@ type ResumeModalState struct {
 	Ticket   *jira.Ticket
 }
 
+// pendingOverview holds the ticket a fresh session is about to be started
+// for, while the user reviews it (and optionally adds a Context Note) on
+// ScreenOverview.
+type pendingOverview struct {
+	Key    string
+	Ticket *jira.Ticket
+}
+
 // Model is the main Bubble Tea model for the Jira Refine TUI.
 type Model struct {
 	cfg          *config.Config
@@ -154,6 +175,10 @@ type Model struct {
 
 	// Resume confirmation dialog
 	resumeModal ResumeModalState
+
+	// Ticket overview & Context Note (shown before a fresh session begins)
+	overview        pendingOverview
+	contextNoteArea textarea.Model
 
 	// Active session (Refinement interview)
 	activeSnapshot   *session.Snapshot
@@ -245,6 +270,13 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 	treeTi.CharLimit = 256
 	treeTi.Width = 60
 
+	noteArea := textarea.New()
+	noteArea.Placeholder = "Optional: add background the ticket description is missing (business context, constraints, prior decisions)..."
+	noteArea.CharLimit = 4096
+	noteArea.ShowLineNumbers = false
+	noteArea.SetWidth(60)
+	noteArea.SetHeight(5)
+
 	vp := viewport.New(80, 20)
 
 	tbl := table.New(table.WithFocused(true))
@@ -275,23 +307,24 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 	syncVp := viewport.New(80, 20)
 
 	m := Model{
-		cfg:            cfg,
-		jiraClient:     client,
-		sessionStore:   store,
-		screen:         ScreenPicker,
-		pickerFocus:    FocusTable,
-		table:          tbl,
-		input:          ti,
-		interviewInput: interviewTi,
-		treeInput:      treeTi,
-		viewport:       vp,
-		syncViewport:   syncVp,
-		syncIDMap:      make(map[string]string),
-		spinner:        s,
-		loading:        true,
-		loadingMsg:     "Loading recent tickets from Origin Project...",
-		width:          80,
-		height:         24,
+		cfg:             cfg,
+		jiraClient:      client,
+		sessionStore:    store,
+		screen:          ScreenPicker,
+		pickerFocus:     FocusTable,
+		table:           tbl,
+		input:           ti,
+		contextNoteArea: noteArea,
+		interviewInput:  interviewTi,
+		treeInput:       treeTi,
+		viewport:        vp,
+		syncViewport:    syncVp,
+		syncIDMap:       make(map[string]string),
+		spinner:         s,
+		loading:         true,
+		loadingMsg:      "Loading recent tickets from Origin Project...",
+		width:           80,
+		height:          24,
 	}
 
 	for _, opt := range opts {
@@ -304,24 +337,27 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 }
 
 // Accessor methods for inspectability and testing
-func (m Model) Screen() Screen                        { return m.screen }
-func (m Model) Loading() bool                         { return m.loading }
-func (m Model) ResumeModalActive() bool               { return m.resumeModal.Active }
-func (m Model) ActiveSnapshot() *session.Snapshot     { return m.activeSnapshot }
-func (m Model) CurrentQuestionIndex() int             { return m.interviewIndex }
-func (m Model) InterviewEditing() bool                { return m.interviewEditing }
-func (m Model) TreeCursor() int                       { return m.treeIndex }
-func (m Model) TreeEditing() bool                     { return m.treeEditing }
-func (m Model) TreeEditField() TreeEditField          { return m.treeEditField }
-func (m Model) SyncProceedRequested() bool            { return m.syncProceedRequested }
-func (m Model) SyncState() SyncState                  { return m.syncState }
-func (m Model) SyncSteps() []refine.SyncStep          { return m.syncSteps }
-func (m Model) SyncCurrentStep() int                  { return m.syncCurrentStep }
-func (m Model) SyncError() error                      { return m.syncError }
-func (m Model) Tickets() []jira.RecentTicket          { return m.tickets }
-func (m Model) PickerFocus() PickerFocus              { return m.pickerFocus }
-func (m Model) InputValue() string                    { return m.input.Value() }
-func (m Model) StatusMsg() (string, bool)             { return m.statusMsg, m.statusIsErr }
+func (m Model) Screen() Screen                    { return m.screen }
+func (m Model) Loading() bool                     { return m.loading }
+func (m Model) ResumeModalActive() bool           { return m.resumeModal.Active }
+func (m Model) ActiveSnapshot() *session.Snapshot { return m.activeSnapshot }
+func (m Model) CurrentQuestionIndex() int         { return m.interviewIndex }
+func (m Model) InterviewEditing() bool            { return m.interviewEditing }
+func (m Model) TreeCursor() int                   { return m.treeIndex }
+func (m Model) TreeEditing() bool                 { return m.treeEditing }
+func (m Model) TreeEditField() TreeEditField      { return m.treeEditField }
+func (m Model) SyncProceedRequested() bool        { return m.syncProceedRequested }
+func (m Model) SyncState() SyncState              { return m.syncState }
+func (m Model) SyncSteps() []refine.SyncStep      { return m.syncSteps }
+func (m Model) SyncCurrentStep() int              { return m.syncCurrentStep }
+func (m Model) SyncError() error                  { return m.syncError }
+func (m Model) Tickets() []jira.RecentTicket      { return m.tickets }
+func (m Model) PickerFocus() PickerFocus          { return m.pickerFocus }
+func (m Model) InputValue() string                { return m.input.Value() }
+func (m Model) StatusMsg() (string, bool)         { return m.statusMsg, m.statusIsErr }
+func (m Model) PendingKey() string                { return m.overview.Key }
+func (m Model) PendingTicket() *jira.Ticket       { return m.overview.Ticket }
+func (m Model) ContextNoteValue() string          { return m.contextNoteArea.Value() }
 
 // TreeItems returns the flattened list of epics and tasks in the decomposition tree.
 func (m Model) TreeItems() []TreeItem {
@@ -629,8 +665,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsErr = false
 			return m, nil
 		}
-		// No snapshot -> initialize fresh snapshot and transition to refinement interview
-		cmd := m.startFreshSession(msg.key, msg.ticket)
+		// No snapshot -> show ticket overview so the user can review the
+		// description and optionally add a Context Note before the fresh
+		// session begins.
+		cmd := m.goToOverview(msg.key, msg.ticket)
 		return m, cmd
 
 	case frontierGeneratedMsg:
@@ -706,8 +744,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "f", "F":
-				// Start fresh: overwrite with fresh snapshot
-				cmd := m.startFreshSession(m.resumeModal.Key, m.resumeModal.Ticket)
+				// Start fresh: show the overview first, same as a
+				// never-before-seen ticket, before overwriting the snapshot.
+				key, ticket := m.resumeModal.Key, m.resumeModal.Ticket
+				m.resumeModal.Active = false
+				cmd := m.goToOverview(key, ticket)
 				return m, cmd
 
 			case "esc", "q", "n", "N":
@@ -779,6 +820,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 			return m, tea.Batch(cmds...)
+		}
+
+		// Ticket overview screen handling
+		if m.screen == ScreenOverview {
+			switch k {
+			case "ctrl+g":
+				// Abandon this ticket selection, back to the picker. Not
+				// ctrl+b: bubbles/textarea already binds that to
+				// "character backward" while composing a Context Note.
+				m.screen = ScreenPicker
+				m.clearPendingOverview()
+				m.statusMsg = "Returned to ticket picker"
+				m.statusIsErr = false
+				return m, nil
+
+			case "esc":
+				// Skip without adding a Context Note.
+				cmd := m.startFreshSession(m.overview.Key, m.overview.Ticket, "")
+				return m, cmd
+
+			case "ctrl+s":
+				note := strings.TrimSpace(m.contextNoteArea.Value())
+				cmd := m.startFreshSession(m.overview.Key, m.overview.Ticket, note)
+				return m, cmd
+
+			default:
+				var cmd tea.Cmd
+				m.contextNoteArea, cmd = m.contextNoteArea.Update(msg)
+				return m, cmd
+			}
 		}
 
 		// Interview screen handling
@@ -1143,7 +1214,35 @@ func (m *Model) populateTable() {
 	m.table.SetRows(rows)
 }
 
-func (m *Model) startFreshSession(key string, ticket *jira.Ticket) tea.Cmd {
+// goToOverview transitions to ScreenOverview so the user can review the
+// ticket's description and optionally add a Context Note before a fresh
+// session is created.
+func (m *Model) goToOverview(key string, ticket *jira.Ticket) tea.Cmd {
+	m.overview = pendingOverview{Key: key, Ticket: ticket}
+	m.contextNoteArea.Reset()
+	m.contextNoteArea.Focus()
+	m.screen = ScreenOverview
+	m.loading = false
+	m.statusMsg = fmt.Sprintf("Reviewing ticket %s before starting refinement", key)
+	m.statusIsErr = false
+	return textarea.Blink
+}
+
+// clearPendingOverview resets the ScreenOverview scratch state: the ticket
+// under review and any Context Note draft. Called from every exit path
+// (back to picker, skip, submit) so they can't drift out of sync.
+func (m *Model) clearPendingOverview() {
+	m.overview = pendingOverview{}
+	m.contextNoteArea.Blur()
+	m.contextNoteArea.Reset()
+}
+
+// startFreshSession creates a new snapshot for key/ticket and transitions
+// into the refinement interview. If contextNote is non-empty, it is recorded
+// as the snapshot's first answered round via AddUserRequirement before the
+// initial frontier is generated, so the AI's first questions are grounded in
+// it (GenerateFrontier includes both Ticket.Description and prior Rounds).
+func (m *Model) startFreshSession(key string, ticket *jira.Ticket, contextNote string) tea.Cmd {
 	snap := &session.Snapshot{
 		Key:    key,
 		Status: session.StatusNew,
@@ -1151,11 +1250,15 @@ func (m *Model) startFreshSession(key string, ticket *jira.Ticket) tea.Cmd {
 	if ticket != nil {
 		snap.Ticket = *ticket
 	}
+	if contextNote != "" {
+		snap.AddUserRequirement(contextNote)
+	}
 	if m.sessionStore != nil {
 		_ = m.sessionStore.Save(snap)
 	}
 	m.activeSnapshot = snap
 	m.resumeModal.Active = false
+	m.clearPendingOverview()
 	m.screen = ScreenInterview
 	if m.refineEngine != nil {
 		m.loading = true
@@ -1306,6 +1409,7 @@ func (m *Model) updateLayout() {
 	// which consumes 2 more columns.
 	contentWidth := clampMin(m.width-6, 40)
 	m.input.Width = contentWidth - 4
+	m.contextNoteArea.SetWidth(contentWidth - 4)
 
 	// Dynamically scale table columns. keyWidth/statusWidth/assigneeWidth
 	// are fixed; Summary absorbs the remainder, minus the per-column

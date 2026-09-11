@@ -149,7 +149,7 @@ func TestPicker_FocusToggle(t *testing.T) {
 	}
 }
 
-func TestPicker_SelectTicket_NoSnapshot_TransitionsToInterview(t *testing.T) {
+func TestPicker_SelectTicket_NoSnapshot_ShowsOverview(t *testing.T) {
 	m, client, _ := setupTestModel(t)
 	updated, _ := m.Update(recentTicketsLoadedMsg{tickets: client.recentTickets})
 	m = updated.(Model)
@@ -166,6 +166,42 @@ func TestPicker_SelectTicket_NoSnapshot_TransitionsToInterview(t *testing.T) {
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
 
+	if m.Screen() != ScreenOverview {
+		t.Fatalf("expected ScreenOverview, got %v", m.Screen())
+	}
+	if m.ResumeModalActive() {
+		t.Fatalf("resume modal should not be active when no previous snapshot exists")
+	}
+	if m.PendingKey() != "STRAT-1" {
+		t.Fatalf("expected pending key STRAT-1, got %s", m.PendingKey())
+	}
+	if m.PendingTicket() == nil {
+		t.Fatalf("expected pending ticket to be set")
+	}
+	if m.ActiveSnapshot() != nil {
+		t.Fatalf("expected no active snapshot before leaving the overview screen")
+	}
+}
+
+func TestPicker_SelectTicket_NoSnapshot_TransitionsToInterview(t *testing.T) {
+	m, client, _ := setupTestModel(t)
+	updated, _ := m.Update(recentTicketsLoadedMsg{tickets: client.recentTickets})
+	m = updated.(Model)
+
+	// Enter on table row 0 (STRAT-1)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	if m.Screen() != ScreenOverview {
+		t.Fatalf("expected ScreenOverview, got %v", m.Screen())
+	}
+
+	// Skip the overview with Esc to proceed into the interview.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+
 	if m.Screen() != ScreenInterview {
 		t.Fatalf("expected ScreenInterview, got %v", m.Screen())
 	}
@@ -177,6 +213,175 @@ func TestPicker_SelectTicket_NoSnapshot_TransitionsToInterview(t *testing.T) {
 	}
 	if m.ResumeModalActive() {
 		t.Fatalf("resume modal should not be active when no previous snapshot exists")
+	}
+}
+
+func TestOverview_ContextNote_SubmittedViaCtrlS_SeedsFirstRound(t *testing.T) {
+	m, client, _ := setupTestModel(t)
+	updated, _ := m.Update(recentTicketsLoadedMsg{tickets: client.recentTickets})
+	m = updated.(Model)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	if m.Screen() != ScreenOverview {
+		t.Fatalf("expected ScreenOverview, got %v", m.Screen())
+	}
+
+	// Type a Context Note.
+	for _, r := range "Only mobile clients are in scope for this initiative." {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(Model)
+	}
+	if m.ContextNoteValue() != "Only mobile clients are in scope for this initiative." {
+		t.Fatalf("expected context note to reflect typed text, got %q", m.ContextNoteValue())
+	}
+
+	// Submit with Ctrl+S.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = updated.(Model)
+
+	if m.Screen() != ScreenInterview {
+		t.Fatalf("expected ScreenInterview, got %v", m.Screen())
+	}
+	snap := m.ActiveSnapshot()
+	if snap == nil {
+		t.Fatalf("expected active snapshot")
+	}
+	if len(snap.Rounds) != 1 {
+		t.Fatalf("expected the Context Note to seed round 1, got %d rounds", len(snap.Rounds))
+	}
+	if len(snap.Rounds[0].Questions) != 1 || snap.Rounds[0].Questions[0].Answer != "Only mobile clients are in scope for this initiative." {
+		t.Fatalf("expected round 1 to carry the context note as an answered question, got %+v", snap.Rounds[0].Questions)
+	}
+}
+
+func TestOverview_SkipWithEsc_StartsFreshSessionWithoutExtraRound(t *testing.T) {
+	m, client, _ := setupTestModel(t)
+	updated, _ := m.Update(recentTicketsLoadedMsg{tickets: client.recentTickets})
+	m = updated.(Model)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+
+	if m.Screen() != ScreenInterview {
+		t.Fatalf("expected ScreenInterview, got %v", m.Screen())
+	}
+	snap := m.ActiveSnapshot()
+	if snap == nil {
+		t.Fatalf("expected active snapshot")
+	}
+	if len(snap.Rounds) != 0 {
+		t.Fatalf("expected no rounds when the overview was skipped without a note, got %d", len(snap.Rounds))
+	}
+}
+
+func TestOverview_CtrlG_ReturnsToPickerWithoutCreatingSnapshot(t *testing.T) {
+	m, client, _ := setupTestModel(t)
+	updated, _ := m.Update(recentTicketsLoadedMsg{tickets: client.recentTickets})
+	m = updated.(Model)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	if m.Screen() != ScreenOverview {
+		t.Fatalf("expected ScreenOverview, got %v", m.Screen())
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
+	m = updated.(Model)
+
+	if m.Screen() != ScreenPicker {
+		t.Fatalf("expected ScreenPicker after Ctrl+G, got %v", m.Screen())
+	}
+	if m.ActiveSnapshot() != nil {
+		t.Fatalf("expected no active snapshot after backing out of the overview")
+	}
+	if m.PendingKey() != "" || m.PendingTicket() != nil {
+		t.Fatalf("expected pending ticket state cleared after backing out")
+	}
+}
+
+func TestOverview_CtrlB_MovesCursorInsteadOfLeavingScreen(t *testing.T) {
+	// Ctrl+B is bubbles/textarea's default "character backward" binding, so
+	// the overview screen must leave it to the textarea (back-to-picker uses
+	// Ctrl+G instead) rather than stealing it to exit the screen.
+	m, client, _ := setupTestModel(t)
+	updated, _ := m.Update(recentTicketsLoadedMsg{tickets: client.recentTickets})
+	m = updated.(Model)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	m = updated.(Model)
+
+	if m.Screen() != ScreenOverview {
+		t.Fatalf("expected Ctrl+B to stay on ScreenOverview (handled by the textarea), got %v", m.Screen())
+	}
+}
+
+func TestOverview_ThinDescription_ShowsWarning(t *testing.T) {
+	m, client, _ := setupTestModel(t)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(recentTicketsLoadedMsg{tickets: client.recentTickets})
+	m = updated.(Model)
+
+	// STRAT-1's mock ticket has no description at all.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "description is thin") {
+		t.Fatalf("expected thin-description warning in overview view, got:\n%s", view)
+	}
+}
+
+func TestOverview_AdequateDescription_NoWarning(t *testing.T) {
+	cfg := &config.Config{Jira: config.JiraConfig{OriginProject: "STRAT"}}
+	client := &mockJiraClient{
+		recentTickets: []jira.RecentTicket{
+			{Key: "STRAT-5", Summary: "Ticket 5", Status: "Open"},
+		},
+		ticketMap: map[string]*jira.Ticket{
+			"STRAT-5": {
+				Key:         "STRAT-5",
+				Summary:     "Ticket 5",
+				Status:      "Open",
+				Description: strings.Repeat("This ticket has a properly detailed description. ", 3),
+			},
+		},
+	}
+	store := session.NewFileStore(t.TempDir())
+	m := NewModel(cfg, client, store)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+	updated, _ = m.Update(recentTicketsLoadedMsg{tickets: client.recentTickets})
+	m = updated.(Model)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	view := m.View()
+	if strings.Contains(view, "description is thin") {
+		t.Fatalf("did not expect thin-description warning for a detailed description, got:\n%s", view)
 	}
 }
 
@@ -304,6 +509,17 @@ func TestPicker_ResumeModal_StartFreshChoice(t *testing.T) {
 	if m.ResumeModalActive() {
 		t.Fatalf("expected resume modal closed")
 	}
+	if m.Screen() != ScreenOverview {
+		t.Fatalf("expected ScreenOverview before the fresh session begins, got %v", m.Screen())
+	}
+	if m.PendingKey() != "STRAT-1" {
+		t.Fatalf("expected pending key STRAT-1, got %s", m.PendingKey())
+	}
+
+	// Skip the overview to actually start the fresh session.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+
 	if m.Screen() != ScreenInterview {
 		t.Fatalf("expected ScreenInterview, got %v", m.Screen())
 	}
@@ -380,6 +596,14 @@ func TestPicker_ManualKeyInput_Submit(t *testing.T) {
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
 
+	if m.Screen() != ScreenOverview {
+		t.Fatalf("expected ScreenOverview, got %v", m.Screen())
+	}
+
+	// Skip the overview to reach the interview.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+
 	if m.Screen() != ScreenInterview {
 		t.Fatalf("expected ScreenInterview, got %v", m.Screen())
 	}
@@ -421,6 +645,10 @@ func TestPicker_InterviewView_BackNavigation(t *testing.T) {
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
 
+	// Skip the overview to reach the interview.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+
 	if m.Screen() != ScreenInterview {
 		t.Fatalf("expected ScreenInterview")
 	}
@@ -457,6 +685,14 @@ func TestPicker_WithInitialKey(t *testing.T) {
 	cmd := m.checkSnapshotCmd("INIT-1", nil)
 	msg := cmd()
 	updated, _ := m.Update(msg)
+	m = updated.(Model)
+
+	if m.Screen() != ScreenOverview {
+		t.Fatalf("expected ScreenOverview, got %v", m.Screen())
+	}
+
+	// Skip the overview to reach the interview.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = updated.(Model)
 
 	if m.Screen() != ScreenInterview {
@@ -1505,8 +1741,3 @@ func TestSyncScreen_Navigation(t *testing.T) {
 		t.Fatalf("expected ScreenPicker after pressing 'p' in success state, got %v", m.Screen())
 	}
 }
-
-
-
-
-
