@@ -73,18 +73,31 @@ func (s *Syncer) Verify(snap *session.Snapshot) error {
 		return fmt.Errorf("decomposition tree validation failed: %w", err)
 	}
 
+	hasIncludedEpic := false
 	for _, epic := range snap.Tree.Epics {
+		if epic.Excluded {
+			continue
+		}
+		hasIncludedEpic = true
 		if strings.TrimSpace(epic.DeliveryProject) == "" {
 			return fmt.Errorf("epic %q (%s) is not routed to a delivery project; run --plan or refine first", epic.ID, epic.Title)
 		}
-		if len(epic.Tasks) == 0 {
-			return fmt.Errorf("epic %q (%s) has no delivery tasks; tree is incomplete", epic.ID, epic.Title)
-		}
+		hasIncludedTask := false
 		for _, task := range epic.Tasks {
+			if task.Excluded {
+				continue
+			}
+			hasIncludedTask = true
 			if strings.TrimSpace(task.DeliveryProject) == "" {
 				return fmt.Errorf("task %q (%s) is not routed to a delivery project; run --plan or refine first", task.ID, task.Title)
 			}
 		}
+		if !hasIncludedTask {
+			return fmt.Errorf("epic %q (%s) has no delivery tasks; tree is incomplete", epic.ID, epic.Title)
+		}
+	}
+	if !hasIncludedEpic {
+		return fmt.Errorf("all epics in decomposition tree are excluded")
 	}
 
 	return nil
@@ -103,8 +116,14 @@ func sortTasksByDependency(epics []session.DecompositionEpic) ([]*taskRef, error
 
 	for i := range epics {
 		epic := &epics[i]
+		if epic.Excluded {
+			continue
+		}
 		for j := range epic.Tasks {
 			t := &epic.Tasks[j]
+			if t.Excluded {
+				continue
+			}
 			ref := &taskRef{
 				Task:    t,
 				EpicID:  epic.ID,
@@ -221,6 +240,9 @@ func (s *Syncer) Sync(ctx context.Context, snap *session.Snapshot, opts SyncOpti
 		}
 
 		epic := &snap.Tree.Epics[i]
+		if epic.Excluded {
+			continue
+		}
 		epicType := epic.Type
 		if epicType == "" {
 			epicType = "Epic"

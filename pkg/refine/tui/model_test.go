@@ -844,9 +844,12 @@ func TestInterview_FinalizeRefinementShortcut(t *testing.T) {
 		t.Fatalf("expected title 'Core Auth Epic', got %s", m.ActiveSnapshot().Tree.Epics[0].Title)
 	}
 
+	if m.Screen() != ScreenTree {
+		t.Fatalf("expected ScreenTree, got %v", m.Screen())
+	}
 	view := m.View()
-	if !strings.Contains(view, "Finalized") && !strings.Contains(view, "finalized") {
-		t.Fatalf("expected finalized in view, got: %s", view)
+	if !strings.Contains(view, "Core Auth Epic") {
+		t.Fatalf("expected epic title in view, got: %s", view)
 	}
 }
 
@@ -882,6 +885,364 @@ func TestInterview_ActionButtonsAndScrolling(t *testing.T) {
 	m = updated.(Model)
 	if m.Screen() != ScreenInterview {
 		t.Fatalf("expected to remain on ScreenInterview after pgdown")
+	}
+}
+
+func TestTreeEditor_NavigationAndHierarchy(t *testing.T) {
+	m, _, store := setupTestModel(t)
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusFinalized,
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:              "EPIC-1",
+					Title:           "Authentication Epic",
+					Description:     "Epic description",
+					DeliveryProject: "AUTH",
+					Tasks: []session.DecompositionTask{
+						{
+							ID:              "TASK-1",
+							Title:           "Login handler",
+							Description:     "Handler desc",
+							DeliveryProject: "AUTH",
+						},
+						{
+							ID:              "TASK-2",
+							Title:           "Token validation",
+							Description:     "Validator desc",
+							DeliveryProject: "CORE",
+						},
+					},
+				},
+			},
+		},
+	}
+	_ = store.Save(snap)
+	m.activeSnapshot = snap
+	m.screen = ScreenTree
+	m.loading = false
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	if m.TreeCursor() != 0 {
+		t.Fatalf("expected initial tree cursor 0, got %d", m.TreeCursor())
+	}
+
+	// Move down to TASK-1
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(Model)
+	if m.TreeCursor() != 1 {
+		t.Fatalf("expected tree cursor 1, got %d", m.TreeCursor())
+	}
+
+	// Move down to TASK-2
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	if m.TreeCursor() != 2 {
+		t.Fatalf("expected tree cursor 2, got %d", m.TreeCursor())
+	}
+
+	// Move up back to TASK-1
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(Model)
+	if m.TreeCursor() != 1 {
+		t.Fatalf("expected tree cursor 1, got %d", m.TreeCursor())
+	}
+
+	// Verify View contains hierarchy and checkboxes
+	view := m.View()
+	if !strings.Contains(view, "Authentication Epic") {
+		t.Fatalf("expected epic title in view, got: %s", view)
+	}
+	if !strings.Contains(view, "Login handler") {
+		t.Fatalf("expected task 1 title in view, got: %s", view)
+	}
+	if !strings.Contains(view, "Token validation") {
+		t.Fatalf("expected task 2 title in view, got: %s", view)
+	}
+	if !strings.Contains(view, "[x]") {
+		t.Fatalf("expected [x] inclusion indicator in view, got: %s", view)
+	}
+}
+
+func TestTreeEditor_ToggleInclusion(t *testing.T) {
+	m, _, store := setupTestModel(t)
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusFinalized,
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:              "EPIC-1",
+					Title:           "Authentication Epic",
+					DeliveryProject: "AUTH",
+					Tasks: []session.DecompositionTask{
+						{
+							ID:              "TASK-1",
+							Title:           "Login handler",
+							DeliveryProject: "AUTH",
+						},
+						{
+							ID:              "TASK-2",
+							Title:           "Token validation",
+							DeliveryProject: "CORE",
+						},
+					},
+				},
+			},
+		},
+	}
+	_ = store.Save(snap)
+	m.activeSnapshot = snap
+	m.screen = ScreenTree
+	m.loading = false
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	// Move cursor to TASK-1 (index 1)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(Model)
+	if m.TreeCursor() != 1 {
+		t.Fatalf("expected tree cursor 1, got %d", m.TreeCursor())
+	}
+
+	// Press space to toggle TASK-1 off
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+
+	if !m.ActiveSnapshot().Tree.Epics[0].Tasks[0].Excluded {
+		t.Fatalf("expected TASK-1 to be excluded")
+	}
+	if m.ActiveSnapshot().Tree.Epics[0].Tasks[1].Excluded {
+		t.Fatalf("expected TASK-2 to remain included")
+	}
+	items := m.TreeItems()
+	if !items[1].Excluded {
+		t.Fatalf("expected tree item 1 to be marked excluded")
+	}
+
+	// Press 'x' on TASK-1 to toggle it back on
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = updated.(Model)
+	if m.ActiveSnapshot().Tree.Epics[0].Tasks[0].Excluded {
+		t.Fatalf("expected TASK-1 to be included again")
+	}
+
+	// Move to EPIC-1 (index 0)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(Model)
+
+	// Press space on EPIC-1 to toggle epic off
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+	if !m.ActiveSnapshot().Tree.Epics[0].Excluded {
+		t.Fatalf("expected EPIC-1 to be excluded")
+	}
+	// Verify children also report excluded when parent epic is excluded
+	items = m.TreeItems()
+	if !items[0].Excluded {
+		t.Fatalf("expected epic item to be excluded")
+	}
+	if !items[1].Excluded || !items[2].Excluded {
+		t.Fatalf("expected child tasks to be excluded when parent epic is excluded")
+	}
+
+	// Check disk persistence
+	loaded, err := store.Load("STRAT-1")
+	if err != nil {
+		t.Fatalf("failed to load snapshot from store: %v", err)
+	}
+	if !loaded.Tree.Epics[0].Excluded {
+		t.Fatalf("expected saved snapshot to have EPIC-1 excluded")
+	}
+}
+
+func TestTreeEditor_InlineEditing(t *testing.T) {
+	m, _, store := setupTestModel(t)
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusFinalized,
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:              "EPIC-1",
+					Title:           "Old Epic Title",
+					Description:     "Old Epic Desc",
+					DeliveryProject: "OLD-PROJ",
+					Tasks: []session.DecompositionTask{
+						{
+							ID:              "TASK-1",
+							Title:           "Old Task Title",
+							Description:     "Old Task Desc",
+							DeliveryProject: "OLD-TASK-PROJ",
+						},
+					},
+				},
+			},
+		},
+	}
+	_ = store.Save(snap)
+	m.activeSnapshot = snap
+	m.screen = ScreenTree
+	m.loading = false
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	// 1. Edit Epic Title
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	if !m.TreeEditing() || m.TreeEditField() != "title" {
+		t.Fatalf("expected treeEditing=true with field=title")
+	}
+
+	// Clear and set value
+	m.treeInput.SetValue("New Epic Title")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.TreeEditing() {
+		t.Fatalf("expected treeEditing=false after Enter")
+	}
+	if m.ActiveSnapshot().Tree.Epics[0].Title != "New Epic Title" {
+		t.Fatalf("expected epic title updated, got %s", m.ActiveSnapshot().Tree.Epics[0].Title)
+	}
+
+	// 2. Edit Epic Description
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	m = updated.(Model)
+	if !m.TreeEditing() || m.TreeEditField() != "description" {
+		t.Fatalf("expected treeEditing=true with field=description")
+	}
+	m.treeInput.SetValue("New Epic Desc")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.ActiveSnapshot().Tree.Epics[0].Description != "New Epic Desc" {
+		t.Fatalf("expected epic description updated, got %s", m.ActiveSnapshot().Tree.Epics[0].Description)
+	}
+
+	// 3. Edit Epic Delivery Project
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	if !m.TreeEditing() || m.TreeEditField() != "project" {
+		t.Fatalf("expected treeEditing=true with field=project")
+	}
+	m.treeInput.SetValue("NEW-EPIC-PROJ")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.ActiveSnapshot().Tree.Epics[0].DeliveryProject != "NEW-EPIC-PROJ" {
+		t.Fatalf("expected epic project updated, got %s", m.ActiveSnapshot().Tree.Epics[0].DeliveryProject)
+	}
+
+	// 4. Navigate down to TASK-1
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(Model)
+	if m.TreeCursor() != 1 {
+		t.Fatalf("expected cursor on task 1")
+	}
+
+	// Edit task title and cancel with Esc
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m = updated.(Model)
+	m.treeInput.SetValue("Cancelled Title")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+	if m.TreeEditing() {
+		t.Fatalf("expected treeEditing=false after Esc")
+	}
+	if m.ActiveSnapshot().Tree.Epics[0].Tasks[0].Title != "Old Task Title" {
+		t.Fatalf("expected old task title preserved after Esc, got %s", m.ActiveSnapshot().Tree.Epics[0].Tasks[0].Title)
+	}
+
+	// Edit task Delivery Project
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	m.treeInput.SetValue("NEW-TASK-PROJ")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.ActiveSnapshot().Tree.Epics[0].Tasks[0].DeliveryProject != "NEW-TASK-PROJ" {
+		t.Fatalf("expected task project updated, got %s", m.ActiveSnapshot().Tree.Epics[0].Tasks[0].DeliveryProject)
+	}
+
+	// Check persisted snapshot
+	loaded, err := store.Load("STRAT-1")
+	if err != nil {
+		t.Fatalf("failed to load snapshot: %v", err)
+	}
+	if loaded.Tree.Epics[0].Title != "New Epic Title" {
+		t.Fatalf("expected saved snapshot to have updated title")
+	}
+	if loaded.Tree.Epics[0].Tasks[0].DeliveryProject != "NEW-TASK-PROJ" {
+		t.Fatalf("expected saved snapshot to have updated task project")
+	}
+}
+
+func TestTreeEditor_ActionButtons_ReturnToInterview_And_ProceedSync(t *testing.T) {
+	m, _, store := setupTestModel(t)
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusFinalized,
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:              "EPIC-1",
+					Title:           "Auth Epic",
+					DeliveryProject: "", // unassigned
+					Tasks: []session.DecompositionTask{
+						{
+							ID:              "TASK-1",
+							Title:           "Auth Task",
+							DeliveryProject: "",
+						},
+					},
+				},
+			},
+		},
+	}
+	_ = store.Save(snap)
+	m.activeSnapshot = snap
+	m.screen = ScreenTree
+	m.loading = false
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	// 1. Action: Return to Interview via 'b'
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	m = updated.(Model)
+	if m.Screen() != ScreenInterview {
+		t.Fatalf("expected ScreenInterview after 'b', got %v", m.Screen())
+	}
+
+	// 2. Return to Tree via 'v'
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	m = updated.(Model)
+	if m.Screen() != ScreenTree {
+		t.Fatalf("expected ScreenTree after 'v', got %v", m.Screen())
+	}
+
+	// 3. Action: Attempt to Proceed to Sync with unassigned project -> should fail validation
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	if m.SyncProceedRequested() {
+		t.Fatalf("expected sync not to proceed when items are unassigned")
+	}
+	statusMsg, isErr := m.StatusMsg()
+	if !isErr || !strings.Contains(statusMsg, "delivery project") {
+		t.Fatalf("expected delivery project error message, got %q (isErr=%v)", statusMsg, isErr)
+	}
+
+	// 4. Assign projects to Epic and Task
+	m.activeSnapshot.Tree.Epics[0].DeliveryProject = "AUTH"
+	m.activeSnapshot.Tree.Epics[0].Tasks[0].DeliveryProject = "AUTH"
+
+	// 5. Action: Proceed to Sync with valid tree
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	if !m.SyncProceedRequested() {
+		t.Fatalf("expected SyncProceedRequested to be true after 's'")
+	}
+	statusMsg, isErr = m.StatusMsg()
+	if isErr || !strings.Contains(statusMsg, "Ready to synchronize") {
+		t.Fatalf("expected ready to synchronize status, got %q (isErr=%v)", statusMsg, isErr)
 	}
 }
 

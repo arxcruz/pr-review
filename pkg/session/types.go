@@ -35,6 +35,7 @@ type DecompositionTask struct {
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
 	DeliveryProject    string   `json:"delivery_project,omitempty"`
 	DependsOn          []string `json:"depends_on,omitempty"`
+	Excluded           bool     `json:"excluded,omitempty"`
 }
 
 // DecompositionEpic represents a decomposed epic containing tasks.
@@ -46,6 +47,7 @@ type DecompositionEpic struct {
 	Type            string              `json:"type,omitempty"`
 	DeliveryProject string              `json:"delivery_project,omitempty"`
 	Tasks           []DecompositionTask `json:"tasks,omitempty"`
+	Excluded        bool                `json:"excluded,omitempty"`
 }
 
 // DecompositionTree represents the hierarchical breakdown of the strategic ticket.

@@ -20,6 +20,8 @@ func (m Model) View() string {
 		content = m.renderPickerView()
 	case ScreenInterview:
 		content = m.renderInterviewView()
+	case ScreenTree:
+		content = m.renderTreeView()
 	default:
 		content = m.renderPickerView()
 	}
@@ -247,6 +249,149 @@ func (m Model) renderStatusLine() string {
 		return statusError.Render("✖ " + m.statusMsg)
 	}
 	return statusSuccess.Render("✓ " + m.statusMsg)
+}
+
+func (m Model) renderTreeView() string {
+	var b strings.Builder
+
+	key := "Unknown"
+	if m.activeSnapshot != nil {
+		key = m.activeSnapshot.Key
+	}
+
+	header := titleStyle.Render("Jira Refine") + " " +
+		projectBadgeStyle.Render(key) + " " +
+		headerInfoStyle.Render("Decomposition Tree & Plan Editor")
+	b.WriteString(header + "\n\n")
+
+	items := m.TreeItems()
+	if len(items) == 0 {
+		emptyMsg := "No decomposition tree available. Press [esc] or [b] to return to interview."
+		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(emptyMsg) + "\n\n")
+		b.WriteString(statusBar.Width(m.width).Render(m.renderTreeHelp()))
+		return b.String()
+	}
+
+	var treeContent strings.Builder
+	treeContent.WriteString(lipgloss.NewStyle().Bold(true).Render("=== Decomposition Tree Hierarchy ===\n\n"))
+
+	for i, item := range items {
+		cursor := "  "
+		itemStyle := lipgloss.NewStyle()
+		if i == m.treeIndex {
+			cursor = "▶ "
+			itemStyle = itemStyle.Bold(true).Foreground(primaryColor)
+		}
+
+		check := "[x]"
+		if item.Excluded {
+			check = "[ ]"
+			itemStyle = itemStyle.Faint(true)
+		}
+
+		projBadge := fmt.Sprintf("[%s]", item.DeliveryProject)
+		if item.DeliveryProject == "" {
+			projBadge = "[Unassigned]"
+		}
+
+		if item.Kind == TreeItemEpic {
+			treeContent.WriteString(fmt.Sprintf("%s%s %s %s %s\n",
+				cursor,
+				check,
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#58A6FF")).Render(fmt.Sprintf("[%s]", item.ID)),
+				itemStyle.Render(item.Title),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#8B949E")).Render(projBadge),
+			))
+		} else {
+			treeContent.WriteString(fmt.Sprintf("%s  └─ %s %s %s %s\n",
+				cursor,
+				check,
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#7EE787")).Render(fmt.Sprintf("[%s]", item.ID)),
+				itemStyle.Render(item.Title),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#8B949E")).Render(projBadge),
+			))
+		}
+	}
+
+	treeContent.WriteString("\n")
+
+	// Selected Item Details
+	if m.treeIndex >= 0 && m.treeIndex < len(items) {
+		curr := items[m.treeIndex]
+		treeContent.WriteString(lipgloss.NewStyle().Bold(true).Render("── Item Details ──\n"))
+		kindStr := "Epic"
+		if curr.Kind == TreeItemTask {
+			kindStr = "Task/Story"
+		}
+		treeContent.WriteString(fmt.Sprintf("Type:        %s (%s)\n", kindStr, curr.ID))
+		treeContent.WriteString(fmt.Sprintf("Title:       %s\n", curr.Title))
+		treeContent.WriteString(fmt.Sprintf("Project:     %s\n", curr.DeliveryProject))
+		if curr.Description != "" {
+			treeContent.WriteString(fmt.Sprintf("Description: %s\n", curr.Description))
+		}
+		if len(curr.DependsOn) > 0 {
+			treeContent.WriteString(fmt.Sprintf("Depends On:  %s\n", strings.Join(curr.DependsOn, ", ")))
+		}
+	}
+
+	vp := m.viewport
+	vp.SetContent(treeContent.String())
+	treeHeight := m.height - 12
+	if m.treeEditing {
+		treeHeight -= 4
+	}
+	if treeHeight < 5 {
+		treeHeight = 5
+	}
+	b.WriteString(boxStyle.Width(m.width - 4).Height(treeHeight).Render(vp.View()) + "\n")
+
+	if m.treeEditing && m.treeIndex >= 0 && m.treeIndex < len(items) {
+		curr := items[m.treeIndex]
+		editPrompt := fmt.Sprintf("▶ Editing %s for [%s]:", strings.Title(m.treeEditField), curr.ID)
+		editBox := fmt.Sprintf("%s\n%s\n%s",
+			lipgloss.NewStyle().Bold(true).Foreground(primaryColor).Render(editPrompt),
+			m.treeInput.View(),
+			explanationStyle.Render("Press [Enter] to Save, [Esc] to Cancel"),
+		)
+		b.WriteString(activeBoxStyle.Width(m.width - 4).Render(editBox) + "\n")
+	}
+
+	// Action buttons
+	actionButtons := fmt.Sprintf(" %s    %s",
+		boxStyle.Render("[ Return to Interview (B/Esc) ]"),
+		activeBoxStyle.Render("[ Proceed to Jira Sync (S) ]"),
+	)
+	b.WriteString(actionButtons + "\n\n")
+
+	// Status line
+	statusLine := m.renderStatusLine()
+	if statusLine != "" {
+		b.WriteString(statusLine + "\n")
+	}
+
+	b.WriteString(statusBar.Width(m.width).Render(m.renderTreeHelp()))
+	return b.String()
+}
+
+func (m Model) renderTreeHelp() string {
+	if m.treeEditing {
+		return fmt.Sprintf("%s %s  •  %s %s  •  %s %s",
+			helpKey.Render("[Enter]"), helpDesc.Render("Save"),
+			helpKey.Render("[Esc]"), helpDesc.Render("Cancel"),
+			helpKey.Render("[Ctrl+C]"), helpDesc.Render("Quit"),
+		)
+	}
+
+	return fmt.Sprintf("%s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s",
+		helpKey.Render("[↑/↓/j/k]"), helpDesc.Render("Navigate"),
+		helpKey.Render("[Space/x]"), helpDesc.Render("Toggle [x]/[ ]"),
+		helpKey.Render("[e]"), helpDesc.Render("Edit Title"),
+		helpKey.Render("[d]"), helpDesc.Render("Edit Desc"),
+		helpKey.Render("[p]"), helpDesc.Render("Project"),
+		helpKey.Render("[s]"), helpDesc.Render("Sync"),
+		helpKey.Render("[esc/b]"), helpDesc.Render("Interview"),
+		helpKey.Render("[q]"), helpDesc.Render("Quit"),
+	)
 }
 
 func (m Model) renderPickerHelp() string {

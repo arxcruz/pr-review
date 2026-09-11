@@ -26,7 +26,31 @@ type Screen int
 const (
 	ScreenPicker Screen = iota
 	ScreenInterview
+	ScreenTree
 )
+
+// TreeItemKind indicates whether a tree item is an Epic or Task.
+type TreeItemKind int
+
+const (
+	TreeItemEpic TreeItemKind = iota
+	TreeItemTask
+)
+
+// TreeItem represents a flattened node in the Decomposition Tree for navigation and editing.
+type TreeItem struct {
+	Kind            TreeItemKind
+	EpicIndex       int
+	TaskIndex       int // -1 for Epic
+	ID              string
+	Key             string
+	Title           string
+	Description     string
+	DeliveryProject string
+	Type            string
+	Excluded        bool
+	DependsOn       []string
+}
 
 // PickerFocus indicates whether keyboard focus is on the ticket table or manual key input.
 type PickerFocus int
@@ -104,6 +128,13 @@ type Model struct {
 	viewport         viewport.Model
 	frontierOpts     refine.FrontierOptions
 
+	// Tree editor state
+	treeIndex            int
+	treeInput            textinput.Model
+	treeEditing          bool
+	treeEditField        string // "title", "description", "project"
+	syncProceedRequested bool
+
 	// Status messages
 	statusMsg   string
 	statusIsErr bool
@@ -166,6 +197,11 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 	interviewTi.CharLimit = 256
 	interviewTi.Width = 60
 
+	treeTi := textinput.New()
+	treeTi.Placeholder = "Enter value..."
+	treeTi.CharLimit = 256
+	treeTi.Width = 60
+
 	vp := viewport.New(80, 20)
 
 	columns := []table.Column{
@@ -203,6 +239,7 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 		table:          tbl,
 		input:          ti,
 		interviewInput: interviewTi,
+		treeInput:      treeTi,
 		viewport:       vp,
 		spinner:        s,
 		loading:        true,
@@ -225,10 +262,53 @@ func (m Model) ResumeModalActive() bool               { return m.resumeModal.Act
 func (m Model) ActiveSnapshot() *session.Snapshot     { return m.activeSnapshot }
 func (m Model) CurrentQuestionIndex() int             { return m.interviewIndex }
 func (m Model) InterviewEditing() bool                { return m.interviewEditing }
+func (m Model) TreeCursor() int                       { return m.treeIndex }
+func (m Model) TreeEditing() bool                     { return m.treeEditing }
+func (m Model) TreeEditField() string                 { return m.treeEditField }
+func (m Model) SyncProceedRequested() bool            { return m.syncProceedRequested }
 func (m Model) Tickets() []jira.RecentTicket          { return m.tickets }
 func (m Model) PickerFocus() PickerFocus              { return m.pickerFocus }
 func (m Model) InputValue() string                    { return m.input.Value() }
 func (m Model) StatusMsg() (string, bool)             { return m.statusMsg, m.statusIsErr }
+
+// TreeItems returns the flattened list of epics and tasks in the decomposition tree.
+func (m Model) TreeItems() []TreeItem {
+	if m.activeSnapshot == nil || m.activeSnapshot.Tree == nil {
+		return nil
+	}
+	var items []TreeItem
+	for eIdx, epic := range m.activeSnapshot.Tree.Epics {
+		items = append(items, TreeItem{
+			Kind:            TreeItemEpic,
+			EpicIndex:       eIdx,
+			TaskIndex:       -1,
+			ID:              epic.ID,
+			Key:             epic.Key,
+			Title:           epic.Title,
+			Description:     epic.Description,
+			DeliveryProject: epic.DeliveryProject,
+			Type:            epic.Type,
+			Excluded:        epic.Excluded,
+		})
+		for tIdx, task := range epic.Tasks {
+			taskExcluded := task.Excluded || epic.Excluded
+			items = append(items, TreeItem{
+				Kind:            TreeItemTask,
+				EpicIndex:       eIdx,
+				TaskIndex:       tIdx,
+				ID:              task.ID,
+				Key:             task.Key,
+				Title:           task.Title,
+				Description:     task.Description,
+				DeliveryProject: task.DeliveryProject,
+				Type:            task.Type,
+				Excluded:        taskExcluded,
+				DependsOn:       task.DependsOn,
+			})
+		}
+	}
+	return items
+}
 
 // Init kicks off spinner and loading of recent tickets
 func (m Model) Init() tea.Cmd {
@@ -469,7 +549,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.tree != nil {
 				epicCount = len(msg.tree.Epics)
 			}
-			m.statusMsg = fmt.Sprintf("Refinement session finalized. Created %d epic(s).", epicCount)
+			m.screen = ScreenTree
+			m.treeIndex = 0
+			m.statusMsg = fmt.Sprintf("Decomposition Tree synthesized (%d epic(s)). Review and edit plan.", epicCount)
 			m.statusIsErr = false
 		}
 		return m, nil
@@ -695,6 +777,164 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.loadingMsg = "Synthesizing Decomposition Tree from settled refinement rounds..."
 					return m, tea.Batch(m.spinner.Tick, m.finalizeRefinementCmd())
 				}
+
+			case "v", "t":
+				if m.activeSnapshot != nil && m.activeSnapshot.Tree != nil && len(m.activeSnapshot.Tree.Epics) > 0 {
+					m.screen = ScreenTree
+					m.treeIndex = 0
+					m.statusMsg = "Navigated to Decomposition Tree plan review"
+					m.statusIsErr = false
+					return m, nil
+				}
+			}
+		}
+
+		// Tree editor screen handling
+		if m.screen == ScreenTree {
+			items := m.TreeItems()
+			if len(items) == 0 {
+				if k == "esc" || k == "b" {
+					m.screen = ScreenInterview
+					m.statusMsg = "Returned to interview"
+					m.statusIsErr = false
+					return m, nil
+				}
+				if k == "q" {
+					return m, tea.Quit
+				}
+				return m, nil
+			}
+
+			if m.treeIndex >= len(items) {
+				m.treeIndex = len(items) - 1
+			}
+			if m.treeIndex < 0 {
+				m.treeIndex = 0
+			}
+
+			if m.treeEditing {
+				switch k {
+				case "esc":
+					m.treeEditing = false
+					m.treeInput.Blur()
+					return m, nil
+
+				case "enter":
+					m.saveTreeItemEdit(m.treeInput.Value())
+					return m, nil
+
+				default:
+					var cmd tea.Cmd
+					m.treeInput, cmd = m.treeInput.Update(msg)
+					return m, cmd
+				}
+			}
+
+			switch k {
+			case "esc", "b":
+				m.screen = ScreenInterview
+				m.statusMsg = "Returned to interview"
+				m.statusIsErr = false
+				return m, nil
+
+			case "q":
+				return m, tea.Quit
+
+			case "up", "k":
+				if m.treeIndex > 0 {
+					m.treeIndex--
+				}
+				return m, nil
+
+			case "down", "j":
+				if m.treeIndex < len(items)-1 {
+					m.treeIndex++
+				}
+				return m, nil
+
+			case "pgup", "ctrl+u":
+				m.treeIndex -= 5
+				if m.treeIndex < 0 {
+					m.treeIndex = 0
+				}
+				return m, nil
+
+			case "pgdown", "ctrl+d":
+				m.treeIndex += 5
+				if m.treeIndex >= len(items) {
+					m.treeIndex = len(items) - 1
+				}
+				return m, nil
+
+			case " ", "x":
+				m.toggleTreeItemInclusion()
+				return m, nil
+
+			case "e":
+				if m.treeIndex >= 0 && m.treeIndex < len(items) {
+					curr := items[m.treeIndex]
+					m.treeEditing = true
+					m.treeEditField = "title"
+					m.treeInput.Placeholder = "Enter new title / summary..."
+					m.treeInput.SetValue(curr.Title)
+					m.treeInput.Focus()
+					return m, textinput.Blink
+				}
+
+			case "d":
+				if m.treeIndex >= 0 && m.treeIndex < len(items) {
+					curr := items[m.treeIndex]
+					m.treeEditing = true
+					m.treeEditField = "description"
+					m.treeInput.Placeholder = "Enter description..."
+					m.treeInput.SetValue(curr.Description)
+					m.treeInput.Focus()
+					return m, textinput.Blink
+				}
+
+			case "p":
+				if m.treeIndex >= 0 && m.treeIndex < len(items) {
+					curr := items[m.treeIndex]
+					m.treeEditing = true
+					m.treeEditField = "project"
+					m.treeInput.Placeholder = "Enter Delivery Project key (e.g. CORE)..."
+					m.treeInput.SetValue(curr.DeliveryProject)
+					m.treeInput.Focus()
+					return m, textinput.Blink
+				}
+
+			case "s", "S":
+				if m.activeSnapshot == nil || m.activeSnapshot.Tree == nil {
+					m.statusMsg = "No decomposition tree available to sync"
+					m.statusIsErr = true
+					return m, nil
+				}
+				var jiraCfg *config.JiraConfig
+				if m.cfg != nil {
+					jiraCfg = &m.cfg.Jira
+				}
+				syncer := refine.NewSyncer(m.jiraClient, m.sessionStore, jiraCfg)
+				if err := syncer.Verify(m.activeSnapshot); err != nil {
+					m.statusMsg = fmt.Sprintf("Cannot sync: %v", err)
+					m.statusIsErr = true
+					return m, nil
+				}
+				m.syncProceedRequested = true
+				includedEpics := 0
+				includedTasks := 0
+				for _, e := range m.activeSnapshot.Tree.Epics {
+					if !e.Excluded {
+						includedEpics++
+						for _, t := range e.Tasks {
+							if !t.Excluded {
+								includedTasks++
+							}
+						}
+					}
+				}
+				m.statusMsg = fmt.Sprintf("Ready to synchronize %d epic(s) and %d task(s) with Jira.", includedEpics, includedTasks)
+				m.statusIsErr = false
+				return m, nil
 			}
 		}
 	}
@@ -755,6 +995,91 @@ func (m *Model) recordCurrentQuestionAnswer(ans string) {
 	if m.interviewIndex < len(m.activeSnapshot.CurrentFrontier)-1 {
 		m.interviewIndex++
 	}
+}
+
+func (m *Model) toggleTreeItemInclusion() {
+	if m.activeSnapshot == nil || m.activeSnapshot.Tree == nil {
+		return
+	}
+	items := m.TreeItems()
+	if m.treeIndex < 0 || m.treeIndex >= len(items) {
+		return
+	}
+	item := items[m.treeIndex]
+	if item.Kind == TreeItemEpic {
+		if item.EpicIndex >= 0 && item.EpicIndex < len(m.activeSnapshot.Tree.Epics) {
+			m.activeSnapshot.Tree.Epics[item.EpicIndex].Excluded = !m.activeSnapshot.Tree.Epics[item.EpicIndex].Excluded
+		}
+	} else if item.Kind == TreeItemTask {
+		if item.EpicIndex >= 0 && item.EpicIndex < len(m.activeSnapshot.Tree.Epics) {
+			epic := &m.activeSnapshot.Tree.Epics[item.EpicIndex]
+			if item.TaskIndex >= 0 && item.TaskIndex < len(epic.Tasks) {
+				epic.Tasks[item.TaskIndex].Excluded = !epic.Tasks[item.TaskIndex].Excluded
+			}
+		}
+	}
+	if m.sessionStore != nil {
+		_ = m.sessionStore.Save(m.activeSnapshot)
+	}
+	m.statusMsg = fmt.Sprintf("Toggled inclusion for %s", item.ID)
+	m.statusIsErr = false
+}
+
+func (m *Model) saveTreeItemEdit(val string) {
+	if m.activeSnapshot == nil || m.activeSnapshot.Tree == nil {
+		m.treeEditing = false
+		m.treeInput.Blur()
+		return
+	}
+	items := m.TreeItems()
+	if m.treeIndex < 0 || m.treeIndex >= len(items) {
+		m.treeEditing = false
+		m.treeInput.Blur()
+		return
+	}
+	item := items[m.treeIndex]
+	val = strings.TrimSpace(val)
+
+	switch m.treeEditField {
+	case "title":
+		if val != "" {
+			if item.Kind == TreeItemEpic && item.EpicIndex < len(m.activeSnapshot.Tree.Epics) {
+				m.activeSnapshot.Tree.Epics[item.EpicIndex].Title = val
+			} else if item.Kind == TreeItemTask && item.EpicIndex < len(m.activeSnapshot.Tree.Epics) {
+				epic := &m.activeSnapshot.Tree.Epics[item.EpicIndex]
+				if item.TaskIndex < len(epic.Tasks) {
+					epic.Tasks[item.TaskIndex].Title = val
+				}
+			}
+		}
+	case "description":
+		if item.Kind == TreeItemEpic && item.EpicIndex < len(m.activeSnapshot.Tree.Epics) {
+			m.activeSnapshot.Tree.Epics[item.EpicIndex].Description = val
+		} else if item.Kind == TreeItemTask && item.EpicIndex < len(m.activeSnapshot.Tree.Epics) {
+			epic := &m.activeSnapshot.Tree.Epics[item.EpicIndex]
+			if item.TaskIndex < len(epic.Tasks) {
+				epic.Tasks[item.TaskIndex].Description = val
+			}
+		}
+	case "project":
+		val = strings.ToUpper(val)
+		if item.Kind == TreeItemEpic && item.EpicIndex < len(m.activeSnapshot.Tree.Epics) {
+			m.activeSnapshot.Tree.Epics[item.EpicIndex].DeliveryProject = val
+		} else if item.Kind == TreeItemTask && item.EpicIndex < len(m.activeSnapshot.Tree.Epics) {
+			epic := &m.activeSnapshot.Tree.Epics[item.EpicIndex]
+			if item.TaskIndex < len(epic.Tasks) {
+				epic.Tasks[item.TaskIndex].DeliveryProject = val
+			}
+		}
+	}
+
+	if m.sessionStore != nil {
+		_ = m.sessionStore.Save(m.activeSnapshot)
+	}
+	m.treeEditing = false
+	m.treeInput.Blur()
+	m.statusMsg = fmt.Sprintf("Updated %s on %s", m.treeEditField, item.ID)
+	m.statusIsErr = false
 }
 
 func (m *Model) updateLayout() {
