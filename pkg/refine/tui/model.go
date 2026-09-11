@@ -643,6 +643,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.sessionStore.Save(m.activeSnapshot)
 			}
 			m.interviewIndex = 0
+			m.viewport.GotoTop()
 			if len(msg.questions) == 0 {
 				m.statusMsg = "All frontier questions resolved. The refinement frontier is empty."
 			} else {
@@ -1327,8 +1328,15 @@ func (m *Model) updateLayout() {
 	})
 
 	vpHeight := clampMin(m.height-10, 5)
-	m.viewport.Width = clampMin(m.width-4, 40)
+	// viewport width must match contentWidth (the box's actual interior
+	// text width), not the box's outer Width(m.width-4) declaration —
+	// using the wider outer width here let long lines fit inside the
+	// viewport's own accounting but then wrap again once lipgloss renders
+	// them inside the narrower box, silently adding rows the height
+	// calculations in renderInterviewView didn't budget for and pushing
+	// the top of the screen off-screen.
+	m.viewport.Width = contentWidth
 	m.viewport.Height = vpHeight
-	m.syncViewport.Width = clampMin(m.width-4, 40)
+	m.syncViewport.Width = contentWidth
 	m.syncViewport.Height = vpHeight
 }

@@ -155,18 +155,41 @@ func (m Model) renderInterviewView() string {
 	header := titleStyle.Render("Jira Refine") + " " +
 		projectBadgeStyle.Render(key) + " " +
 		headerInfoStyle.Render(fmt.Sprintf("Frontier Refinement Interview (Round %d)", roundNum))
-	b.WriteString(header + "\n\n")
+	head := header + "\n\n"
+	b.WriteString(head)
+
+	// Status line
+	statusStr := ""
+	if statusLine := m.renderStatusLine(); statusLine != "" {
+		statusStr = statusLine + "\n"
+	}
+	helpStr := statusBar.Width(m.width).Render(m.renderInterviewHelp())
+	plainTail := statusStr + helpStr
+
+	// Reserve exactly the space the fixed (non-box) sections need, sized off
+	// their actual rendered line counts rather than a hardcoded estimate —
+	// same approach as renderPickerView (see the comment there). Without
+	// this, the box could claim more height than the terminal actually has
+	// left, pushing its own top (and everything above it) off-screen.
+	const boxChrome = 2 // box border: top + bottom
+	headLines := strings.Count(head, "\n")
 
 	if m.loading {
+		tailLines := strings.Count(plainTail, "\n") + 1
+		boxHeight := clampMin(m.height-headLines-tailLines-boxChrome, 5)
 		loadingText := fmt.Sprintf(" %s %s", m.spinner.View(), m.loadingMsg)
-		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(loadingText))
+		b.WriteString(boxStyle.Width(m.width - 4).Height(boxHeight).Render(loadingText))
 		b.WriteString("\n\n")
 	} else if m.activeSnapshot != nil && len(m.activeSnapshot.CurrentFrontier) > 0 {
 		var content strings.Builder
 		totalQ := len(m.activeSnapshot.CurrentFrontier)
+		// The round header's spacing is produced by the same
+		// concatenate-then-append-newline path used for every question row
+		// below (rather than embedding "\n\n" inside the Render() call), so
+		// the first question's leading spacing matches the rest exactly.
 		content.WriteString(lipgloss.NewStyle().Bold(true).Render(
-			fmt.Sprintf("=== Refinement Round %d (%d Frontier Questions) ===\n\n", roundNum, totalQ),
-		))
+			fmt.Sprintf("=== Refinement Round %d (%d Frontier Questions) ===", roundNum, totalQ),
+		) + "\n\n")
 
 		for i, q := range m.activeSnapshot.CurrentFrontier {
 			cursor := "  "
@@ -177,7 +200,7 @@ func (m Model) renderInterviewView() string {
 			}
 
 			idBadge := fmt.Sprintf("[%s] ", q.ID)
-			titleWidth := titleBudget(m.width-4, cursor+idBadge, "")
+			titleWidth := titleBudget(m.width-6, cursor+idBadge, "")
 			content.WriteString(cursor + idBadge + titleSt.Render(truncateTitle(q.Title, titleWidth)) + "\n")
 			if q.Explanation != "" {
 				content.WriteString("    " + explanationStyle.Render("Why: "+q.Explanation) + "\n")
@@ -202,14 +225,18 @@ func (m Model) renderInterviewView() string {
 			content.WriteString("\n")
 		}
 
-		vp := m.viewport
-		vp.SetContent(content.String())
-		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 12).Render(vp.View()) + "\n")
-
 		actionButtons := fmt.Sprintf(" %s    %s",
 			activeBoxStyle.Render("[ Submit Round (Ctrl+S) ]"),
 			boxStyle.Render("[ Finalize Refinement (Ctrl+F) ]"),
 		)
+		tail := actionButtons + "\n\n" + plainTail
+		tailLines := strings.Count(tail, "\n") + 1
+		boxHeight := clampMin(m.height-headLines-tailLines-boxChrome, 5)
+
+		vp := m.viewport
+		vp.Height = boxHeight
+		vp.SetContent(content.String())
+		b.WriteString(boxStyle.Width(m.width - 4).Height(boxHeight).Render(vp.View()) + "\n")
 		b.WriteString(actionButtons + "\n\n")
 	} else if m.activeSnapshot != nil && m.activeSnapshot.Status == session.StatusFinalized {
 		var content strings.Builder
@@ -229,7 +256,9 @@ func (m Model) renderInterviewView() string {
 			content.WriteString(fmt.Sprintf("\nPlan saved to: %s\n", m.planFile))
 		}
 		content.WriteString("\nRefinement complete! Press [esc] or [b] to return to Ticket Picker, or [q] to quit.")
-		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(content.String()) + "\n\n")
+		tailLines := strings.Count(plainTail, "\n") + 1
+		boxHeight := clampMin(m.height-headLines-tailLines-boxChrome, 5)
+		b.WriteString(boxStyle.Width(m.width - 4).Height(boxHeight).Render(content.String()) + "\n\n")
 	} else {
 		details := fmt.Sprintf(
 			"Ticket:      %s\nSummary:     %s\nStatus:      %s\n\nAll frontier questions resolved or ready for frontier generation.\nPress [ctrl+f] to finalize decomposition, or [r] to generate frontier.",
@@ -237,17 +266,12 @@ func (m Model) renderInterviewView() string {
 			m.activeSnapshot.Ticket.Summary,
 			m.activeSnapshot.Status,
 		)
-		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(details) + "\n\n")
+		tailLines := strings.Count(plainTail, "\n") + 1
+		boxHeight := clampMin(m.height-headLines-tailLines-boxChrome, 5)
+		b.WriteString(boxStyle.Width(m.width - 4).Height(boxHeight).Render(details) + "\n\n")
 	}
 
-	// Status line
-	statusLine := m.renderStatusLine()
-	if statusLine != "" {
-		b.WriteString(statusLine + "\n")
-	}
-
-	helpLine := m.renderInterviewHelp()
-	b.WriteString(statusBar.Width(m.width).Render(helpLine))
+	b.WriteString(plainTail)
 
 	return b.String()
 }
