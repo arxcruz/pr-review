@@ -103,7 +103,7 @@ func TestSessionLoop_Run_SingleRoundAndFinalize(t *testing.T) {
 	mockAI := &sequentialMockAI{
 		responses: []string{round1JSON, emptyRoundJSON, treeJSON},
 	}
-	engine := refine.NewEngine(mockAI)
+	engine := refine.NewEngine(mockAI, mustDefaultPromptSet(t))
 
 	// User input sequence:
 	// Q1: Enter (accept recommendation: "PostgreSQL")
@@ -240,7 +240,7 @@ func TestSessionLoop_Run_MultiRoundWithAddRequirement(t *testing.T) {
 			`{"epics":[{"id":"EPIC-1","title":"Event Bus","tasks":[{"id":"TASK-1","title":"Kafka Topic Config"}]}]}`,
 		},
 	}
-	engine := refine.NewEngine(mockAI)
+	engine := refine.NewEngine(mockAI, mustDefaultPromptSet(t))
 
 	// Flow:
 	// Round 1 Q1: Enter (accept "Kafka")
@@ -336,7 +336,7 @@ func TestSessionLoop_Run_ResumeExistingFrontier(t *testing.T) {
 			`{"epics":[{"id":"EPIC-1","title":"Audit Logging","tasks":[{"id":"TASK-1","title":"Retention Worker"}]}]}`,
 		},
 	}
-	engine := refine.NewEngine(mockAI)
+	engine := refine.NewEngine(mockAI, mustDefaultPromptSet(t))
 
 	// Input: "3" (select 365 days), then Enter to finalize
 	input := "3\n\n"
@@ -436,7 +436,7 @@ func TestSessionLoop_Run_WithRouterAndPlanOutput(t *testing.T) {
 		},
 	}
 
-	engine := refine.NewEngine(mockAI)
+	engine := refine.NewEngine(mockAI, mustDefaultPromptSet(t))
 	router := refine.NewRouter(cfg)
 	planFile := filepath.Join(tmpDir, "output-plan.md")
 

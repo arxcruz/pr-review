@@ -135,7 +135,6 @@ func (l *SessionLoop) Run(ctx context.Context) error {
 				fmt.Fprintf(l.out, "\nSynthesizing Decomposition Tree from settled refinement rounds...\n")
 				tree, err := l.engine.GenerateDecompositionTree(ctx, l.snapshot, DecompositionOptions{
 					DocContext:  l.opts.DocContext,
-					Guidelines:  l.opts.Guidelines,
 					Model:       l.opts.Model,
 					Temperature: l.opts.Temperature,
 				})

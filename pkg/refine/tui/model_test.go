@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -477,6 +478,74 @@ func TestPicker_ResumeModal_ResumeChoice(t *testing.T) {
 	}
 }
 
+func TestPicker_ResumeModal_ViewHistory(t *testing.T) {
+	m, client, store := setupTestModel(t)
+
+	answeredAt := time.Date(2026, 9, 11, 13, 20, 0, 0, time.UTC)
+	existingSnap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusFinalized,
+		Ticket: jira.Ticket{
+			Key:     "STRAT-1",
+			Summary: "Ticket 1 Existing",
+		},
+		Rounds: []session.Round{
+			{
+				Number: 1,
+				Questions: []session.Question{
+					{ID: "Q1", Title: "Scope", Recommendation: "Do X", Answer: "Do X"},
+					{ID: "Q2", Title: "Rollout", Recommendation: "Ship gradually", Answer: "Ship all at once"},
+					{ID: "Q3", Title: "Unanswered", Recommendation: "Rec text", Answer: ""},
+				},
+				AnsweredAt: &answeredAt,
+			},
+		},
+	}
+	_ = store.Save(existingSnap)
+
+	updated, _ := m.Update(recentTicketsLoadedMsg{tickets: client.recentTickets})
+	m = updated.(Model)
+
+	// Trigger selection to open the resume modal.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	if !m.ResumeModalActive() {
+		t.Fatalf("expected resume modal active")
+	}
+
+	// Press 'v' to view history.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	m = updated.(Model)
+
+	if !m.ShowingHistory() {
+		t.Fatalf("expected history view to be active")
+	}
+	if !m.ResumeModalActive() {
+		t.Fatalf("expected resume modal to remain active underneath the history view")
+	}
+
+	view := m.View()
+	for _, want := range []string{"Scope", "Do X", "Rollout", "Ship all at once", "diverged from recommendation", "Unanswered", "(unanswered)"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected history view to contain %q, got:\n%s", want, view)
+		}
+	}
+
+	// Esc returns to the resume modal, not the picker.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+
+	if m.ShowingHistory() {
+		t.Fatalf("expected history view to be closed")
+	}
+	if !m.ResumeModalActive() {
+		t.Fatalf("expected resume modal still active after leaving history view")
+	}
+}
+
 func TestPicker_ResumeModal_StartFreshChoice(t *testing.T) {
 	m, client, store := setupTestModel(t)
 
@@ -928,7 +997,11 @@ func TestInterview_SubmitRound_AdvancesAndRecomputesFrontier(t *testing.T) {
 		},
 	}
 
-	m := NewModel(cfg, client, store, WithAIEngine(aiMock))
+	testPromptSet, err := refine.DefaultPromptSet()
+	if err != nil {
+		t.Fatalf("failed to load default prompt set: %v", err)
+	}
+	m := NewModel(cfg, client, store, WithAIEngine(aiMock), WithPromptSet(testPromptSet))
 	snap := &session.Snapshot{
 		Key:    "STRAT-1",
 		Status: session.StatusInProgress,
@@ -1026,7 +1099,11 @@ func TestInterview_FinalizeRefinementShortcut(t *testing.T) {
 		},
 	}
 
-	m := NewModel(cfg, client, store, WithAIEngine(aiMock))
+	testPromptSet, err := refine.DefaultPromptSet()
+	if err != nil {
+		t.Fatalf("failed to load default prompt set: %v", err)
+	}
+	m := NewModel(cfg, client, store, WithAIEngine(aiMock), WithPromptSet(testPromptSet))
 	snap := &session.Snapshot{
 		Key:    "STRAT-1",
 		Status: session.StatusInProgress,

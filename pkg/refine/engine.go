@@ -12,7 +12,6 @@ import (
 // FrontierOptions defines tuning parameters for frontier generation.
 type FrontierOptions struct {
 	DocContext  string
-	Guidelines  string
 	Model       string
 	Temperature float64
 }
@@ -20,7 +19,6 @@ type FrontierOptions struct {
 // DecompositionOptions defines tuning parameters for decomposition tree generation.
 type DecompositionOptions struct {
 	DocContext  string
-	Guidelines  string
 	Model       string
 	Temperature float64
 	MaxRetries  int
@@ -29,11 +27,13 @@ type DecompositionOptions struct {
 // Engine drives the interactive ticket refinement process using AI.
 type Engine struct {
 	aiEngine ai.Engine
+	prompts  *PromptSet
 }
 
-// NewEngine creates a new refinement engine backed by the provided AI engine.
-func NewEngine(aiEngine ai.Engine) *Engine {
-	return &Engine{aiEngine: aiEngine}
+// NewEngine creates a new refinement engine backed by the provided AI engine
+// and prompt set.
+func NewEngine(aiEngine ai.Engine, prompts *PromptSet) *Engine {
+	return &Engine{aiEngine: aiEngine, prompts: prompts}
 }
 
 // GenerateFrontier analyzes the ticket, doc context, and past rounds to formulate questions
@@ -43,7 +43,10 @@ func (e *Engine) GenerateFrontier(ctx context.Context, snap *session.Snapshot, o
 		return nil, fmt.Errorf("session snapshot is required")
 	}
 
-	sysPrompt, userPrompt := BuildFrontierPrompt(snap.Ticket, snap.Rounds, opts.DocContext, opts.Guidelines)
+	sysPrompt, userPrompt, err := BuildFrontierPrompt(e.prompts, snap.Ticket, snap.Rounds, opts.DocContext)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build frontier prompt: %w", err)
+	}
 
 	genRes, err := e.aiEngine.Generate(ctx, ai.PromptRequest{
 		SystemPrompt: sysPrompt,
@@ -91,7 +94,10 @@ func (e *Engine) GenerateDecompositionTree(ctx context.Context, snap *session.Sn
 		maxRetries = 2
 	}
 
-	sysPrompt, baseUserPrompt := BuildDecompositionPrompt(snap.Ticket, snap.Rounds, opts.DocContext, opts.Guidelines)
+	sysPrompt, baseUserPrompt, err := BuildDecompositionPrompt(e.prompts, snap.Ticket, snap.Rounds, opts.DocContext)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build decomposition prompt: %w", err)
+	}
 	currentUserPrompt := baseUserPrompt
 
 	var lastErr error

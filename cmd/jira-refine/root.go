@@ -28,6 +28,7 @@ type rootOptions struct {
 	model      string
 	sessionDir string
 	tui        bool
+	promptFile string
 }
 
 func newRootCmd() *cobra.Command {
@@ -194,7 +195,12 @@ into structured, actionable delivery items across team projects.`,
 			if err != nil {
 				return fmt.Errorf("failed to initialize AI engine: %w", err)
 			}
-			refineEngine := refine.NewEngine(aiEngine)
+
+			promptSet, err := refine.LoadPromptSet(opts.promptFile, cmd.ErrOrStderr())
+			if err != nil {
+				return fmt.Errorf("failed to load prompt file: %w", err)
+			}
+			refineEngine := refine.NewEngine(aiEngine, promptSet)
 
 			var docContext string
 			if len(cfg.Jira.DocPaths) > 0 {
@@ -237,6 +243,7 @@ into structured, actionable delivery items across team projects.`,
 	cmd.PersistentFlags().StringVar(&opts.model, "model", "", "AI model override")
 	cmd.PersistentFlags().StringVar(&opts.sessionDir, "session-dir", "", "Path to directory for persisting session snapshots")
 	cmd.PersistentFlags().StringVar(&opts.planFile, "plan-file", "", "Path to write formatted plan markdown file")
+	cmd.PersistentFlags().StringVar(&opts.promptFile, "prompt-file", "", "Path to a custom jira-refine.md prompt file (defaults to ~/.config/jira-refine/jira-refine.md)")
 	cmd.Flags().BoolVar(&opts.dump, "dump", false, "Dump parsed ticket summary to terminal")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Output formatted markdown plan summary for ticket session")
 	cmd.Flags().BoolVar(&opts.sync, "sync", false, "Synchronize decomposition tree with remote Jira instance")
@@ -297,6 +304,12 @@ func runTUI(opts *rootOptions, initialKey string) error {
 		}),
 	}
 	if aiEngine != nil {
+		promptSet, err := refine.LoadPromptSet(opts.promptFile, os.Stderr)
+		if err != nil {
+			return fmt.Errorf("failed to load prompt file: %w", err)
+		}
+		modelOpts = append(modelOpts, refinetui.WithPromptSet(promptSet))
+
 		router := refine.NewRouter(&cfg.Jira,
 			refine.WithAIEngine(aiEngine),
 			refine.WithModel(opts.model),

@@ -24,6 +24,10 @@ _Avoid_: Project dispatch, destination assignment
 An interactive interview loop where questions are posed to resolve ambiguity and clarify requirements.
 _Avoid_: Chat, planning meeting, prompt loop
 
+**Refinement Guidelines**:
+User-editable rules that shape how Frontier Questions and the Decomposition Tree are generated (e.g. architectural priorities, what counts as a good question). Stored outside the codebase so a user can tune them without a rebuild.
+_Avoid_: Prompt, system prompt, instructions
+
 **Frontier Question**:
 An unresolved decision whose prerequisites are satisfied, presented to the user in a round.
 _Avoid_: Prompt, clarification, inquiry

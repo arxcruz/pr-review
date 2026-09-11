@@ -154,6 +154,7 @@ type Model struct {
 	jiraClient   jira.Client
 	sessionStore session.Store
 	aiEngine     ai.Engine
+	promptSet    *refine.PromptSet
 	refineEngine *refine.Engine
 	router       *refine.Router
 	planFile     string
@@ -175,6 +176,10 @@ type Model struct {
 
 	// Resume confirmation dialog
 	resumeModal ResumeModalState
+
+	// Round-by-round Q&A history viewer, opened from the resume modal
+	showHistory     bool
+	historyViewport viewport.Model
 
 	// Ticket overview & Context Note (shown before a fresh session begins)
 	overview        pendingOverview
@@ -215,9 +220,13 @@ type Option func(*Model)
 func WithAIEngine(eng ai.Engine) Option {
 	return func(m *Model) {
 		m.aiEngine = eng
-		if eng != nil {
-			m.refineEngine = refine.NewEngine(eng)
-		}
+	}
+}
+
+// WithPromptSet sets the prompt set used to build refinement prompts.
+func WithPromptSet(ps *refine.PromptSet) Option {
+	return func(m *Model) {
+		m.promptSet = ps
 	}
 }
 
@@ -278,6 +287,7 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 	noteArea.SetHeight(5)
 
 	vp := viewport.New(80, 20)
+	historyVp := viewport.New(80, 20)
 
 	tbl := table.New(table.WithFocused(true))
 
@@ -318,6 +328,7 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 		interviewInput:  interviewTi,
 		treeInput:       treeTi,
 		viewport:        vp,
+		historyViewport: historyVp,
 		syncViewport:    syncVp,
 		syncIDMap:       make(map[string]string),
 		spinner:         s,
@@ -331,6 +342,10 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 		opt(&m)
 	}
 
+	if m.aiEngine != nil && m.promptSet != nil {
+		m.refineEngine = refine.NewEngine(m.aiEngine, m.promptSet)
+	}
+
 	m.updateLayout()
 
 	return m
@@ -340,6 +355,7 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 func (m Model) Screen() Screen                    { return m.screen }
 func (m Model) Loading() bool                     { return m.loading }
 func (m Model) ResumeModalActive() bool           { return m.resumeModal.Active }
+func (m Model) ShowingHistory() bool              { return m.showHistory }
 func (m Model) ActiveSnapshot() *session.Snapshot { return m.activeSnapshot }
 func (m Model) CurrentQuestionIndex() int         { return m.interviewIndex }
 func (m Model) InterviewEditing() bool            { return m.interviewEditing }
@@ -520,7 +536,6 @@ func (m Model) finalizeRefinementCmd() tea.Cmd {
 			var err error
 			tree, err = m.refineEngine.GenerateDecompositionTree(ctx, m.activeSnapshot, refine.DecompositionOptions{
 				DocContext:  m.frontierOpts.DocContext,
-				Guidelines:  m.frontierOpts.Guidelines,
 				Model:       m.frontierOpts.Model,
 				Temperature: m.frontierOpts.Temperature,
 			})
@@ -725,6 +740,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Round-by-round history viewer, opened from the resume modal. Takes
+		// priority over the modal's own key handling below since the modal
+		// stays Active (but unrendered) underneath while history is shown,
+		// so "esc"/"b" here returns to the modal rather than falling through
+		// to the modal's own "esc" (cancel) handling.
+		if m.showHistory {
+			switch k {
+			case "esc", "b":
+				m.showHistory = false
+				return m, nil
+			case "q":
+				return m, tea.Quit
+			case "pgup", "pgdown", "u", "d", "up", "down", "j", "k":
+				var cmd tea.Cmd
+				m.historyViewport, cmd = m.historyViewport.Update(msg)
+				return m, cmd
+			}
+			return m, nil
+		}
+
 		// Modal handling
 		if m.resumeModal.Active {
 			switch k {
@@ -741,6 +776,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loading = false
 				m.statusMsg = fmt.Sprintf("Resumed refinement session for %s", m.activeSnapshot.Key)
 				m.statusIsErr = false
+				return m, nil
+
+			case "v", "V":
+				// View round-by-round Q&A history for this session, read-only.
+				m.historyViewport.SetContent(renderHistoryContent(m.resumeModal.Snapshot))
+				m.historyViewport.GotoTop()
+				m.showHistory = true
 				return m, nil
 
 			case "f", "F":
@@ -1416,7 +1458,7 @@ func (m *Model) updateLayout() {
 	// Cell/Header padding chrome (tableColumnChrome per column, 4 columns)
 	// so the row's true rendered width matches contentWidth exactly
 	// instead of overflowing it.
-	keyWidth := 12
+	keyWidth := 16
 	statusWidth := 14
 	assigneeWidth := 16
 	summaryWidth := contentWidth - keyWidth - statusWidth - assigneeWidth - 4*tableColumnChrome
@@ -1441,6 +1483,8 @@ func (m *Model) updateLayout() {
 	// the top of the screen off-screen.
 	m.viewport.Width = contentWidth
 	m.viewport.Height = vpHeight
+	m.historyViewport.Width = contentWidth
+	m.historyViewport.Height = vpHeight
 	m.syncViewport.Width = contentWidth
 	m.syncViewport.Height = vpHeight
 }

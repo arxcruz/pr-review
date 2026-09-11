@@ -12,6 +12,15 @@ import (
 	"github.com/arxcruz/pr-review/pkg/session"
 )
 
+func mustDefaultPromptSet(t *testing.T) *refine.PromptSet {
+	t.Helper()
+	ps, err := refine.DefaultPromptSet()
+	if err != nil {
+		t.Fatalf("failed to load default prompt set: %v", err)
+	}
+	return ps
+}
+
 type mockAIEngine struct {
 	name           string
 	capturedPrompt ai.PromptRequest
@@ -78,7 +87,13 @@ func TestBuildFrontierPrompt(t *testing.T) {
 		},
 	}
 
-	sysPrompt, userPrompt := refine.BuildFrontierPrompt(ticket, rounds, docContext, guidelines)
+	ps := mustDefaultPromptSet(t)
+	ps.Guidelines = guidelines
+
+	sysPrompt, userPrompt, err := refine.BuildFrontierPrompt(ps, ticket, rounds, docContext)
+	if err != nil {
+		t.Fatalf("unexpected error building frontier prompt: %v", err)
+	}
 
 	// System prompt should contain instructions and schema
 	if !strings.Contains(sysPrompt, "frontier questions") {
@@ -146,7 +161,13 @@ func TestBuildDecompositionPrompt(t *testing.T) {
 	docContext := "## Multi-Repo Docs\nOAuth2 boundaries"
 	guidelines := "Always favor OIDC compliant JWTs."
 
-	sysPrompt, userPrompt := refine.BuildDecompositionPrompt(ticket, rounds, docContext, guidelines)
+	ps := mustDefaultPromptSet(t)
+	ps.Guidelines = guidelines
+
+	sysPrompt, userPrompt, err := refine.BuildDecompositionPrompt(ps, ticket, rounds, docContext)
+	if err != nil {
+		t.Fatalf("unexpected error building decomposition prompt: %v", err)
+	}
 
 	if !strings.Contains(sysPrompt, "Decomposition Tree") {
 		t.Errorf("expected sysPrompt to mention Decomposition Tree, got: %s", sysPrompt)
@@ -365,7 +386,7 @@ func TestGenerateFrontier_Success(t *testing.T) {
 	]`
 
 	mockAI := &mockAIEngine{response: llmResponse}
-	engine := refine.NewEngine(mockAI)
+	engine := refine.NewEngine(mockAI, mustDefaultPromptSet(t))
 
 	snap := &session.Snapshot{
 		Key:     "STRAT-42",
@@ -378,7 +399,6 @@ func TestGenerateFrontier_Success(t *testing.T) {
 
 	opts := refine.FrontierOptions{
 		DocContext: "## Architecture Docs",
-		Guidelines: "Prefer gRPC for internal service communications.",
 	}
 
 	ctx := context.Background()
@@ -480,7 +500,7 @@ func TestParseQuestions_InvalidJSON(t *testing.T) {
 }
 
 func TestGenerateFrontier_NilSnapshot(t *testing.T) {
-	engine := refine.NewEngine(&mockAIEngine{})
+	engine := refine.NewEngine(&mockAIEngine{}, mustDefaultPromptSet(t))
 	_, err := engine.GenerateFrontier(context.Background(), nil, refine.FrontierOptions{})
 	if err == nil {
 		t.Fatal("expected error on nil snapshot, got nil")
@@ -489,7 +509,7 @@ func TestGenerateFrontier_NilSnapshot(t *testing.T) {
 
 func TestGenerateFrontier_AIError(t *testing.T) {
 	mockAI := &mockAIEngine{err: context.DeadlineExceeded}
-	engine := refine.NewEngine(mockAI)
+	engine := refine.NewEngine(mockAI, mustDefaultPromptSet(t))
 	snap := &session.Snapshot{Key: "STRAT-1"}
 	_, err := engine.GenerateFrontier(context.Background(), snap, refine.FrontierOptions{})
 	if err == nil {
@@ -536,7 +556,7 @@ func TestGenerateDecompositionTree_Success(t *testing.T) {
 	}`
 
 	mockAI := &sequenceMockAI{responses: []string{validTreeJSON}}
-	engine := refine.NewEngine(mockAI)
+	engine := refine.NewEngine(mockAI, mustDefaultPromptSet(t))
 
 	snap := &session.Snapshot{
 		Key:    "STRAT-1",
@@ -582,7 +602,7 @@ func TestGenerateDecompositionTree_RetrySuccess(t *testing.T) {
 	}`
 
 	mockAI := &sequenceMockAI{responses: []string{malformedJSON, validTreeJSON}}
-	engine := refine.NewEngine(mockAI)
+	engine := refine.NewEngine(mockAI, mustDefaultPromptSet(t))
 
 	snap := &session.Snapshot{
 		Key:    "STRAT-2",
@@ -607,7 +627,7 @@ func TestGenerateDecompositionTree_RetrySuccess(t *testing.T) {
 
 func TestGenerateDecompositionTree_RetryExhausted(t *testing.T) {
 	mockAI := &sequenceMockAI{responses: []string{"bad-json-1", "bad-json-2", "bad-json-3"}}
-	engine := refine.NewEngine(mockAI)
+	engine := refine.NewEngine(mockAI, mustDefaultPromptSet(t))
 
 	snap := &session.Snapshot{
 		Key: "STRAT-3",
@@ -628,7 +648,7 @@ func TestGenerateDecompositionTree_RetryExhausted(t *testing.T) {
 }
 
 func TestGenerateDecompositionTree_NilSnapshot(t *testing.T) {
-	engine := refine.NewEngine(&mockAIEngine{})
+	engine := refine.NewEngine(&mockAIEngine{}, mustDefaultPromptSet(t))
 	_, err := engine.GenerateDecompositionTree(context.Background(), nil, refine.DecompositionOptions{})
 	if err == nil {
 		t.Fatal("expected error on nil snapshot, got nil")

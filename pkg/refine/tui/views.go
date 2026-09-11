@@ -35,6 +35,10 @@ func (m Model) View() string {
 		return renderTooSmallView(m.width, m.height)
 	}
 
+	if m.showHistory {
+		return m.renderHistoryView()
+	}
+
 	var content string
 	switch m.screen {
 	case ScreenPicker:
@@ -382,16 +386,101 @@ func (m Model) renderResumeModal() string {
 
 	title := modalTitle.Render(fmt.Sprintf("Existing Refinement Session Found: %s", key))
 	body := fmt.Sprintf(
-		"Summary:         %s\nSession Status:  %s\nAnswered Rounds: %d\n\nWould you like to resume this session or start fresh?\n\n%s %s\n%s %s\n%s %s",
+		"Summary:         %s\nSession Status:  %s\nAnswered Rounds: %d\n\nWould you like to resume this session or start fresh?\n\n%s %s\n%s %s\n%s %s\n%s %s",
 		summary,
 		status,
 		rounds,
 		helpKey.Render("[r] / [Enter]"), helpDesc.Render("Resume existing session"),
+		helpKey.Render("[v]"), helpDesc.Render("View round-by-round Q&A history"),
 		helpKey.Render("[f]"), helpDesc.Render("Start fresh (reset previous rounds)"),
 		helpKey.Render("[esc] / [q]"), helpDesc.Render("Cancel and return to ticket picker"),
 	)
 
 	return modalBox.Width(64).Render(title + "\n\n" + body)
+}
+
+// renderHistoryContent formats every completed Round of a session snapshot
+// as read-only Q&A text: each question's prompt, the recommendation offered,
+// and the answer actually recorded (or "(unanswered)" when a round was left
+// incomplete, and "diverged from recommendation" when the recorded answer
+// differs from what was recommended).
+func renderHistoryContent(snap *session.Snapshot) string {
+	if snap == nil || len(snap.Rounds) == 0 {
+		return explanationStyle.Render("No completed rounds yet for this session.")
+	}
+
+	var b strings.Builder
+	for _, round := range snap.Rounds {
+		answeredAt := "unknown time"
+		if round.AnsweredAt != nil {
+			answeredAt = round.AnsweredAt.Local().Format("2006-01-02 15:04")
+		}
+		b.WriteString(lipgloss.NewStyle().Bold(true).Render(
+			fmt.Sprintf("=== Round %d (%d question(s)) — answered %s ===", round.Number, len(round.Questions), answeredAt),
+		) + "\n\n")
+
+		for _, q := range round.Questions {
+			idBadge := fmt.Sprintf("[%s] ", q.ID)
+			b.WriteString(idBadge + questionTitle.Render(q.Title) + "\n")
+			if q.Explanation != "" {
+				b.WriteString("    " + explanationStyle.Render("Why: "+q.Explanation) + "\n")
+			}
+			if q.Recommendation != "" {
+				b.WriteString("    " + recommendationStyle.Render("Recommendation: "+q.Recommendation) + "\n")
+			}
+			switch {
+			case q.Answer == "":
+				b.WriteString("    Answer: " + explanationStyle.Render("(unanswered)") + "\n")
+			case q.Answer == q.Recommendation:
+				b.WriteString("    Answer: " + answerStyle.Render("✓ "+q.Answer) + " " + explanationStyle.Render("(accepted recommendation)") + "\n")
+			default:
+				b.WriteString("    Answer: " + answerStyle.Render("✎ "+q.Answer) + " " + explanationStyle.Render("(diverged from recommendation)") + "\n")
+			}
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func (m Model) renderHistoryView() string {
+	var b strings.Builder
+
+	key := "Unknown"
+	summary := ""
+	status := ""
+	if m.resumeModal.Snapshot != nil {
+		key = m.resumeModal.Key
+		summary = m.resumeModal.Snapshot.Ticket.Summary
+		status = m.resumeModal.Snapshot.Status
+	}
+
+	header := titleStyle.Render("Jira Refine") + " " +
+		projectBadgeStyle.Render(key) + " " +
+		headerInfoStyle.Render(fmt.Sprintf("Refinement History — %s (%s)", summary, status))
+	head := header + "\n\n"
+	b.WriteString(head)
+
+	helpStr := statusBar.Width(m.width).Render(m.renderHistoryHelp())
+
+	const boxChrome = 2 // box border: top + bottom
+	headLines := strings.Count(head, "\n")
+	tailLines := strings.Count(helpStr, "\n") + 1
+	boxHeight := clampMin(m.height-headLines-tailLines-boxChrome, 5)
+
+	vp := m.historyViewport
+	vp.Height = boxHeight
+	b.WriteString(boxStyle.Width(m.width-4).Height(boxHeight).Render(vp.View()) + "\n\n")
+	b.WriteString(helpStr)
+
+	return b.String()
+}
+
+func (m Model) renderHistoryHelp() string {
+	return fmt.Sprintf("%s %s  •  %s %s  •  %s %s",
+		helpKey.Render("[↑/↓/j/k/pgup/pgdown]"), helpDesc.Render("Scroll"),
+		helpKey.Render("[esc/b]"), helpDesc.Render("Back"),
+		helpKey.Render("[q]"), helpDesc.Render("Quit"),
+	)
 }
 
 func (m Model) renderStatusLine() string {
