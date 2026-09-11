@@ -780,7 +780,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "v", "V":
 				// View round-by-round Q&A history for this session, read-only.
-				m.historyViewport.SetContent(renderHistoryContent(m.resumeModal.Snapshot))
+				m.historyViewport.SetContent(renderHistoryContent(m.resumeModal.Snapshot, clampMin(m.width-6, 40)))
 				m.historyViewport.GotoTop()
 				m.showHistory = true
 				return m, nil

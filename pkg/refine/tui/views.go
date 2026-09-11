@@ -25,6 +25,28 @@ func titleBudget(totalWidth int, prefix, suffix string) int {
 	return totalWidth - lipgloss.Width(prefix) - lipgloss.Width(suffix)
 }
 
+// wrapLabeledField renders a "<indent><label><text>" field that reflows onto
+// additional lines (indented to align under the label) instead of being
+// clipped by the viewport's horizontal cut once a line exceeds its width.
+// totalWidth is the full available row width (e.g. contentWidth); style
+// colors each wrapped line individually so ANSI codes never span a newline.
+func wrapLabeledField(indent, label, text string, totalWidth int, style lipgloss.Style) string {
+	width := totalWidth - lipgloss.Width(indent) - lipgloss.Width(label)
+	if width < 1 {
+		width = 1
+	}
+	wrapped := lipgloss.NewStyle().Width(width).Render(text)
+	lines := strings.Split(wrapped, "\n")
+
+	var b strings.Builder
+	b.WriteString(indent + style.Render(label+lines[0]) + "\n")
+	continuation := indent + strings.Repeat(" ", lipgloss.Width(label))
+	for _, line := range lines[1:] {
+		b.WriteString(continuation + style.Render(line) + "\n")
+	}
+	return b.String()
+}
+
 // View renders the terminal UI according to current screen and modal states.
 func (m Model) View() string {
 	if m.width == 0 {
@@ -276,7 +298,7 @@ func (m Model) renderInterviewView() string {
 			titleWidth := titleBudget(m.width-6, cursor+idBadge, "")
 			content.WriteString(cursor + idBadge + titleSt.Render(truncateTitle(q.Title, titleWidth)) + "\n")
 			if q.Explanation != "" {
-				content.WriteString("    " + explanationStyle.Render("Why: "+q.Explanation) + "\n")
+				content.WriteString(wrapLabeledField("    ", "Why: ", q.Explanation, m.width-6, explanationStyle))
 			}
 			if len(q.Options) > 0 {
 				content.WriteString("    Options:\n")
@@ -404,7 +426,7 @@ func (m Model) renderResumeModal() string {
 // and the answer actually recorded (or "(unanswered)" when a round was left
 // incomplete, and "diverged from recommendation" when the recorded answer
 // differs from what was recommended).
-func renderHistoryContent(snap *session.Snapshot) string {
+func renderHistoryContent(snap *session.Snapshot, width int) string {
 	if snap == nil || len(snap.Rounds) == 0 {
 		return explanationStyle.Render("No completed rounds yet for this session.")
 	}
@@ -423,7 +445,7 @@ func renderHistoryContent(snap *session.Snapshot) string {
 			idBadge := fmt.Sprintf("[%s] ", q.ID)
 			b.WriteString(idBadge + questionTitle.Render(q.Title) + "\n")
 			if q.Explanation != "" {
-				b.WriteString("    " + explanationStyle.Render("Why: "+q.Explanation) + "\n")
+				b.WriteString(wrapLabeledField("    ", "Why: ", q.Explanation, width, explanationStyle))
 			}
 			if q.Recommendation != "" {
 				b.WriteString("    " + recommendationStyle.Render("Recommendation: "+q.Recommendation) + "\n")
