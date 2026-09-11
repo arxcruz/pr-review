@@ -522,9 +522,12 @@ func (m Model) renderTreeView() string {
 	}
 
 	// Action buttons
-	actionButtons := fmt.Sprintf(" %s    %s",
-		boxStyle.Render("[ Return to Interview (B/Esc) ]"),
-		activeBoxStyle.Render("[ Proceed to Jira Sync (S) ]"),
+	actionButtons := lipgloss.NewStyle().PaddingLeft(1).Render(
+		lipgloss.JoinHorizontal(lipgloss.Top,
+			boxStyle.Render("[ Return to Interview (B/Esc) ]"),
+			"    ",
+			activeBoxStyle.Render("[ Proceed to Jira Sync (S) ]"),
+		),
 	)
 	b.WriteString(actionButtons + "\n\n")
 
@@ -722,9 +725,12 @@ func (m Model) renderSyncView() string {
 		}
 		b.WriteString(boxStyle.Width(m.width-4).Height(vpHeight).Render(vp.View()) + "\n\n")
 
-		actionButtons := fmt.Sprintf(" %s    %s",
-			activeBoxStyle.Render("[ Return to Ticket Picker (P) ]"),
-			boxStyle.Render("[ Return to Tree Review (B/Esc) ]"),
+		actionButtons := lipgloss.NewStyle().PaddingLeft(1).Render(
+			lipgloss.JoinHorizontal(lipgloss.Top,
+				activeBoxStyle.Render("[ Return to Ticket Picker (P) ]"),
+				"    ",
+				boxStyle.Render("[ Return to Tree Review (B/Esc) ]"),
+			),
 		)
 		b.WriteString(actionButtons + "\n\n")
 	} else {

@@ -1741,3 +1741,54 @@ func TestSyncScreen_Navigation(t *testing.T) {
 		t.Fatalf("expected ScreenPicker after pressing 'p' in success state, got %v", m.Screen())
 	}
 }
+
+// lineContainingBoth returns the first rendered line containing both
+// substrings, or "" if no single line contains both. Bordered boxes rendered
+// with plain string concatenation instead of lipgloss.JoinHorizontal end up
+// staggered across separate lines instead of side by side, so this is what
+// distinguishes a correctly joined button row from a broken one.
+func lineContainingBoth(view, a, b string) string {
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, a) && strings.Contains(line, b) {
+			return line
+		}
+	}
+	return ""
+}
+
+func TestTreeView_ActionButtons_RenderSideBySide(t *testing.T) {
+	m, _, _ := setupTestModelForSync(t)
+	m.loading = false
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	view := m.View()
+	if lineContainingBoth(view, "Return to Interview", "Proceed to Jira Sync") == "" {
+		t.Fatalf("expected 'Return to Interview' and 'Proceed to Jira Sync' buttons on the same rendered line, got:\n%s", view)
+	}
+}
+
+func TestSyncView_SuccessActionButtons_RenderSideBySide(t *testing.T) {
+	m, _, _ := setupTestModelForSync(t)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+
+	for i := 0; i < len(m.SyncSteps()); i++ {
+		st := m.SyncSteps()[i]
+		st.Status = refine.StepCompleted
+		st.Key = fmt.Sprintf("AUTH-%d", 300+i)
+		updated, _ = m.Update(syncStepResultMsg{stepIndex: i, step: st})
+		m = updated.(Model)
+	}
+	if m.SyncState() != SyncStateSuccess {
+		t.Fatalf("expected SyncStateSuccess, got %v", m.SyncState())
+	}
+
+	view := m.View()
+	if lineContainingBoth(view, "Return to Ticket Picker", "Return to Tree Review") == "" {
+		t.Fatalf("expected 'Return to Ticket Picker' and 'Return to Tree Review' buttons on the same rendered line, got:\n%s", view)
+	}
+}
