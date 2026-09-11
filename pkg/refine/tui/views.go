@@ -324,13 +324,13 @@ func (m Model) renderTreeView() string {
 			kindStr = "Task/Story"
 		}
 		treeContent.WriteString(fmt.Sprintf("Type:        %s (%s)\n", kindStr, curr.ID))
-		treeContent.WriteString(fmt.Sprintf("Title:       %s\n", curr.Title))
-		treeContent.WriteString(fmt.Sprintf("Project:     %s\n", curr.DeliveryProject))
+		treeContent.WriteString(fmt.Sprintf("Title:            %s\n", curr.Title))
+		treeContent.WriteString(fmt.Sprintf("Delivery Project: %s\n", curr.DeliveryProject))
 		if curr.Description != "" {
-			treeContent.WriteString(fmt.Sprintf("Description: %s\n", curr.Description))
+			treeContent.WriteString(fmt.Sprintf("Description:      %s\n", curr.Description))
 		}
 		if len(curr.DependsOn) > 0 {
-			treeContent.WriteString(fmt.Sprintf("Depends On:  %s\n", strings.Join(curr.DependsOn, ", ")))
+			treeContent.WriteString(fmt.Sprintf("Depends On:       %s\n", strings.Join(curr.DependsOn, ", ")))
 		}
 	}
 
@@ -347,7 +347,11 @@ func (m Model) renderTreeView() string {
 
 	if m.treeEditing && m.treeIndex >= 0 && m.treeIndex < len(items) {
 		curr := items[m.treeIndex]
-		editPrompt := fmt.Sprintf("▶ Editing %s for [%s]:", strings.Title(m.treeEditField), curr.ID)
+		fieldLabel := strings.Title(string(m.treeEditField))
+		if m.treeEditField == TreeEditFieldDeliveryProject {
+			fieldLabel = "Delivery Project"
+		}
+		editPrompt := fmt.Sprintf("▶ Editing %s for [%s]:", fieldLabel, curr.ID)
 		editBox := fmt.Sprintf("%s\n%s\n%s",
 			lipgloss.NewStyle().Bold(true).Foreground(primaryColor).Render(editPrompt),
 			m.treeInput.View(),

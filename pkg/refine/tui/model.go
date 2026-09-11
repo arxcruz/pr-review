@@ -37,6 +37,16 @@ const (
 	TreeItemTask
 )
 
+// TreeEditField represents the active field being edited on a Decomposition Tree item.
+type TreeEditField string
+
+const (
+	TreeEditFieldNone            TreeEditField = ""
+	TreeEditFieldTitle           TreeEditField = "title"
+	TreeEditFieldDescription     TreeEditField = "description"
+	TreeEditFieldDeliveryProject TreeEditField = "project"
+)
+
 // TreeItem represents a flattened node in the Decomposition Tree for navigation and editing.
 type TreeItem struct {
 	Kind            TreeItemKind
@@ -132,7 +142,7 @@ type Model struct {
 	treeIndex            int
 	treeInput            textinput.Model
 	treeEditing          bool
-	treeEditField        string // "title", "description", "project"
+	treeEditField        TreeEditField
 	syncProceedRequested bool
 
 	// Status messages
@@ -264,7 +274,7 @@ func (m Model) CurrentQuestionIndex() int             { return m.interviewIndex 
 func (m Model) InterviewEditing() bool                { return m.interviewEditing }
 func (m Model) TreeCursor() int                       { return m.treeIndex }
 func (m Model) TreeEditing() bool                     { return m.treeEditing }
-func (m Model) TreeEditField() string                 { return m.treeEditField }
+func (m Model) TreeEditField() TreeEditField          { return m.treeEditField }
 func (m Model) SyncProceedRequested() bool            { return m.syncProceedRequested }
 func (m Model) Tickets() []jira.RecentTicket          { return m.tickets }
 func (m Model) PickerFocus() PickerFocus              { return m.pickerFocus }
@@ -872,35 +882,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "e":
 				if m.treeIndex >= 0 && m.treeIndex < len(items) {
-					curr := items[m.treeIndex]
-					m.treeEditing = true
-					m.treeEditField = "title"
-					m.treeInput.Placeholder = "Enter new title / summary..."
-					m.treeInput.SetValue(curr.Title)
-					m.treeInput.Focus()
-					return m, textinput.Blink
+					cmd := m.startTreeEdit(TreeEditFieldTitle, "Enter new title / summary...", items[m.treeIndex].Title)
+					return m, cmd
 				}
 
 			case "d":
 				if m.treeIndex >= 0 && m.treeIndex < len(items) {
-					curr := items[m.treeIndex]
-					m.treeEditing = true
-					m.treeEditField = "description"
-					m.treeInput.Placeholder = "Enter description..."
-					m.treeInput.SetValue(curr.Description)
-					m.treeInput.Focus()
-					return m, textinput.Blink
+					cmd := m.startTreeEdit(TreeEditFieldDescription, "Enter description...", items[m.treeIndex].Description)
+					return m, cmd
 				}
 
 			case "p":
 				if m.treeIndex >= 0 && m.treeIndex < len(items) {
-					curr := items[m.treeIndex]
-					m.treeEditing = true
-					m.treeEditField = "project"
-					m.treeInput.Placeholder = "Enter Delivery Project key (e.g. CORE)..."
-					m.treeInput.SetValue(curr.DeliveryProject)
-					m.treeInput.Focus()
-					return m, textinput.Blink
+					cmd := m.startTreeEdit(TreeEditFieldDeliveryProject, "Enter Delivery Project key (e.g. CORE)...", items[m.treeIndex].DeliveryProject)
+					return m, cmd
 				}
 
 			case "s", "S":
@@ -1013,6 +1008,9 @@ func (m *Model) toggleTreeItemInclusion() {
 	} else if item.Kind == TreeItemTask {
 		if item.EpicIndex >= 0 && item.EpicIndex < len(m.activeSnapshot.Tree.Epics) {
 			epic := &m.activeSnapshot.Tree.Epics[item.EpicIndex]
+			if epic.Excluded {
+				epic.Excluded = false
+			}
 			if item.TaskIndex >= 0 && item.TaskIndex < len(epic.Tasks) {
 				epic.Tasks[item.TaskIndex].Excluded = !epic.Tasks[item.TaskIndex].Excluded
 			}
@@ -1023,6 +1021,16 @@ func (m *Model) toggleTreeItemInclusion() {
 	}
 	m.statusMsg = fmt.Sprintf("Toggled inclusion for %s", item.ID)
 	m.statusIsErr = false
+}
+
+func (m *Model) startTreeEdit(field TreeEditField, placeholder string, val string) tea.Cmd {
+	m.treeEditing = true
+	m.treeEditField = field
+	m.treeInput.Placeholder = placeholder
+	m.treeInput.CharLimit = 4096
+	m.treeInput.SetValue(val)
+	m.treeInput.Focus()
+	return textinput.Blink
 }
 
 func (m *Model) saveTreeItemEdit(val string) {
