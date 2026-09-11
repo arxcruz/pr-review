@@ -111,6 +111,14 @@ type syncStepResultMsg struct {
 	err       error
 }
 
+// minTermWidth and minTermHeight are the smallest terminal dimensions this
+// TUI's layout supports. Below this, sections are shown a "too small"
+// message instead of a layout squeezed into a size it wasn't budgeted for.
+const (
+	minTermWidth  = 80
+	minTermHeight = 24
+)
+
 // ResumeModalState manages the state of the resume-or-fresh confirmation dialog.
 type ResumeModalState struct {
 	Active   bool
@@ -239,19 +247,12 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 
 	vp := viewport.New(80, 20)
 
-	columns := []table.Column{
-		{Title: "Key", Width: 14},
-		{Title: "Summary", Width: 46},
-		{Title: "Status", Width: 14},
-		{Title: "Assignee", Width: 18},
-	}
+	tbl := table.New(table.WithFocused(true))
 
-	tbl := table.New(
-		table.WithColumns(columns),
-		table.WithFocused(true),
-		table.WithHeight(14),
-	)
-
+	// tStyle.Cell/Header keep bubbles/table's default Padding(0, 1) per
+	// column; if that default ever changes here, update tableColumnChrome
+	// in updateLayout to match, or column widths will drift out of sync
+	// with contentWidth again.
 	tStyle := table.DefaultStyles()
 	tStyle.Header = tStyle.Header.
 		BorderStyle(lipgloss.NormalBorder()).
@@ -262,7 +263,13 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 	tStyle.Selected = tStyle.Selected.
 		Foreground(lipgloss.Color("#FFFFFF")).
 		Background(primaryColor).
-		Bold(true)
+		Bold(true).
+		// Inline keeps the selected row on exactly one line even if its
+		// rendered width momentarily exceeds the box's content width;
+		// every unselected row already gets this from bubbles/table's
+		// per-cell styling, but the row-level Selected style did not,
+		// which let a wide row soft-wrap only when selected.
+		Inline(true)
 	tbl.SetStyles(tStyle)
 
 	syncVp := viewport.New(80, 20)
@@ -290,6 +297,8 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 	for _, opt := range opts {
 		opt(&m)
 	}
+
+	m.updateLayout()
 
 	return m
 }
@@ -1269,26 +1278,46 @@ func (m *Model) saveTreeItemEdit(val string) {
 	m.statusIsErr = false
 }
 
-func (m *Model) updateLayout() {
-	tableHeight := m.height - 12
-	if tableHeight < 5 {
-		tableHeight = 5
-	}
-	m.table.SetHeight(tableHeight)
+// tableColumnChrome is how much horizontal space bubbles/table's default
+// Cell/Header style (Padding(0, 1)) adds around each column beyond its
+// declared Width: 1 column of padding on each side.
+const tableColumnChrome = 2
 
-	contentWidth := m.width - 6
-	if contentWidth < 40 {
-		contentWidth = 40
+// maxSummaryWidth caps the Summary column so it doesn't stretch to fill an
+// arbitrarily wide terminal when actual ticket summaries are much shorter
+// than the available space, leaving the column mostly blank.
+const maxSummaryWidth = 100
+
+func clampMin(v, min int) int {
+	if v < min {
+		return min
 	}
+	return v
+}
+
+func (m *Model) updateLayout() {
+	// Table row height for the picker screen is computed at render time in
+	// renderPickerView, from the actual rendered size of the surrounding
+	// sections, rather than here — see the comment there for why.
+
+	// contentWidth is the space available inside a box's border+padding
+	// chrome: boxStyle declares Width(m.width-4) and adds Padding(0, 1),
+	// which consumes 2 more columns.
+	contentWidth := clampMin(m.width-6, 40)
 	m.input.Width = contentWidth - 4
 
-	// Dynamically scale table columns
+	// Dynamically scale table columns. keyWidth/statusWidth/assigneeWidth
+	// are fixed; Summary absorbs the remainder, minus the per-column
+	// Cell/Header padding chrome (tableColumnChrome per column, 4 columns)
+	// so the row's true rendered width matches contentWidth exactly
+	// instead of overflowing it.
 	keyWidth := 12
 	statusWidth := 14
 	assigneeWidth := 16
-	summaryWidth := contentWidth - keyWidth - statusWidth - assigneeWidth - 6
-	if summaryWidth < 18 {
-		summaryWidth = 18
+	summaryWidth := contentWidth - keyWidth - statusWidth - assigneeWidth - 4*tableColumnChrome
+	summaryWidth = clampMin(summaryWidth, 18)
+	if summaryWidth > maxSummaryWidth {
+		summaryWidth = maxSummaryWidth
 	}
 	m.table.SetColumns([]table.Column{
 		{Title: "Key", Width: keyWidth},
@@ -1297,12 +1326,9 @@ func (m *Model) updateLayout() {
 		{Title: "Assignee", Width: assigneeWidth},
 	})
 
-	vpHeight := m.height - 10
-	if vpHeight < 5 {
-		vpHeight = 5
-	}
-	m.viewport.Width = m.width - 4
+	vpHeight := clampMin(m.height-10, 5)
+	m.viewport.Width = clampMin(m.width-4, 40)
 	m.viewport.Height = vpHeight
-	m.syncViewport.Width = m.width - 4
+	m.syncViewport.Width = clampMin(m.width-4, 40)
 	m.syncViewport.Height = vpHeight
 }

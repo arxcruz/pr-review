@@ -31,6 +31,10 @@ func (m Model) View() string {
 		return "Initializing..."
 	}
 
+	if m.width < minTermWidth || m.height < minTermHeight {
+		return renderTooSmallView(m.width, m.height)
+	}
+
 	var content string
 	switch m.screen {
 	case ScreenPicker:
@@ -52,9 +56,23 @@ func (m Model) View() string {
 	return content
 }
 
-func (m Model) renderPickerView() string {
-	var b strings.Builder
+// renderTooSmallView is shown instead of the normal layout when the
+// terminal is smaller than minTermWidth x minTermHeight, so the layout
+// never has to squeeze a fixed set of sections into a budget it wasn't
+// designed for.
+func renderTooSmallView(width, height int) string {
+	msg := fmt.Sprintf(
+		"Terminal too small\n\nJira Refine needs at least %dx%d, current size is %dx%d.\nPlease resize your terminal.",
+		minTermWidth, minTermHeight, width, height,
+	)
+	if width <= 0 || height <= 0 {
+		return msg
+	}
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center,
+		lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(msg))
+}
 
+func (m Model) renderPickerView() string {
 	// Header
 	project := "Origin Project"
 	if m.cfg != nil && m.cfg.Jira.OriginProject != "" {
@@ -63,22 +81,7 @@ func (m Model) renderPickerView() string {
 	header := titleStyle.Render("Jira Refine") + " " +
 		projectBadgeStyle.Render(project) + " " +
 		headerInfoStyle.Render("Strategic Ticket Selection")
-	b.WriteString(header + "\n\n")
-
-	// Main content: loading or ticket list
-	if m.loading {
-		loadingText := fmt.Sprintf(" %s %s", m.spinner.View(), m.loadingMsg)
-		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(loadingText))
-		b.WriteString("\n\n")
-	} else {
-		// Table container
-		tableStyle := boxStyle
-		if m.pickerFocus == FocusTable {
-			tableStyle = activeBoxStyle
-		}
-		tableView := tableStyle.Width(m.width - 4).Render(m.table.View())
-		b.WriteString(tableView + "\n\n")
-	}
+	head := header + "\n\n"
 
 	// Manual ticket input container
 	inputBoxStyle := boxStyle
@@ -91,17 +94,50 @@ func (m Model) renderPickerView() string {
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#D0D0D0")).Render(inputHeader),
 		m.input.View(),
 	)
-	b.WriteString(inputBoxStyle.Width(m.width - 4).Render(inputContent) + "\n")
+	inputStr := inputBoxStyle.Width(m.width - 4).Render(inputContent) + "\n"
 
 	// Status line
-	statusLine := m.renderStatusLine()
-	if statusLine != "" {
-		b.WriteString(statusLine + "\n")
+	statusStr := ""
+	if statusLine := m.renderStatusLine(); statusLine != "" {
+		statusStr = statusLine + "\n"
 	}
 
 	// Help / footer bar
-	helpLine := m.renderPickerHelp()
-	b.WriteString(statusBar.Width(m.width).Render(helpLine))
+	helpStr := statusBar.Width(m.width).Render(m.renderPickerHelp())
+
+	tail := inputStr + statusStr + helpStr
+
+	// Reserve exactly the space the fixed (non-table) sections need, sized
+	// off their actual rendered line counts rather than a hardcoded
+	// estimate. This is what keeps the table box (including its top
+	// border) fully on-screen regardless of how many lines the help bar
+	// or a status message end up wrapping to on a given terminal width.
+	const tableBoxChrome = 2 // box border: top + bottom
+	const spacerLines = 1    // blank line between the table box and the input box
+	headLines := strings.Count(head, "\n")
+	tailLines := strings.Count(tail, "\n") + 1
+	tableHeight := clampMin(m.height-headLines-spacerLines-tailLines-tableBoxChrome, 5)
+
+	var b strings.Builder
+	b.WriteString(head)
+
+	// Main content: loading or ticket list
+	if m.loading {
+		loadingText := fmt.Sprintf(" %s %s", m.spinner.View(), m.loadingMsg)
+		b.WriteString(boxStyle.Width(m.width - 4).Height(tableHeight).Render(loadingText))
+		b.WriteString("\n\n")
+	} else {
+		// Table container
+		tableStyle := boxStyle
+		if m.pickerFocus == FocusTable {
+			tableStyle = activeBoxStyle
+		}
+		m.table.SetHeight(tableHeight)
+		tableView := tableStyle.Width(m.width - 4).Render(m.table.View())
+		b.WriteString(tableView + "\n\n")
+	}
+
+	b.WriteString(tail)
 
 	return b.String()
 }
