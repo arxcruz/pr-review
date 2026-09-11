@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/arxcruz/pr-review/pkg/ai"
 	"github.com/arxcruz/pr-review/pkg/config"
 	"github.com/arxcruz/pr-review/pkg/jira"
+	"github.com/arxcruz/pr-review/pkg/refine"
 	"github.com/arxcruz/pr-review/pkg/session"
 )
 
@@ -1245,6 +1248,264 @@ func TestTreeEditor_ActionButtons_ReturnToInterview_And_ProceedSync(t *testing.T
 		t.Fatalf("expected ready to synchronize status, got %q (isErr=%v)", statusMsg, isErr)
 	}
 }
+
+func setupTestModelForSync(t *testing.T) (Model, *mockJiraClient, session.Store) {
+	cfg := &config.Config{
+		Jira: config.JiraConfig{
+			URL:           "https://jira.example.com",
+			OriginProject: "STRAT",
+		},
+	}
+	client := &mockJiraClient{
+		ticketMap: map[string]*jira.Ticket{
+			"STRAT-1": {Key: "STRAT-1", Summary: "Strategic Ticket 1"},
+		},
+	}
+	store := session.NewFileStore(t.TempDir())
+	m := NewModel(cfg, client, store)
+
+	m.activeSnapshot = &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusFinalized,
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:              "EPIC-1",
+					Title:           "Auth Service",
+					DeliveryProject: "AUTH",
+					Tasks: []session.DecompositionTask{
+						{
+							ID:              "TASK-1",
+							Title:           "User Model",
+							DeliveryProject: "AUTH",
+						},
+						{
+							ID:              "TASK-2",
+							Title:           "Login Endpoint",
+							DeliveryProject: "AUTH",
+							DependsOn:       []string{"TASK-1"},
+						},
+					},
+				},
+			},
+		},
+	}
+	m.screen = ScreenTree
+	return m, client, store
+}
+
+func TestSyncScreen_TriggerAndInitialSteps(t *testing.T) {
+	m, _, _ := setupTestModelForSync(t)
+
+	// Press 's' to start sync
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+
+	if m.Screen() != ScreenSync {
+		t.Fatalf("expected ScreenSync, got %v", m.Screen())
+	}
+	if m.SyncState() != SyncStateRunning {
+		t.Fatalf("expected SyncStateRunning, got %v", m.SyncState())
+	}
+	if len(m.SyncSteps()) != 4 { // 1 epic + 2 tasks + 1 dependency link
+		t.Fatalf("expected 4 steps, got %d", len(m.SyncSteps()))
+	}
+	if m.SyncCurrentStep() != 0 {
+		t.Fatalf("expected current step 0, got %d", m.SyncCurrentStep())
+	}
+	if cmd == nil {
+		t.Fatalf("expected non-nil command returned to execute first step")
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "Jira Synchronization") {
+		t.Errorf("expected view to contain 'Jira Synchronization', got:\n%s", view)
+	}
+	if !strings.Contains(view, "Auth Service") {
+		t.Errorf("expected view to contain step title 'Auth Service', got:\n%s", view)
+	}
+}
+
+func TestSyncScreen_StepProgressAndSuccessSummary(t *testing.T) {
+	m, _, store := setupTestModelForSync(t)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+
+	// Step 0 completion (Epic)
+	step0 := m.SyncSteps()[0]
+	step0.Status = refine.StepCompleted
+	step0.Key = "AUTH-100"
+	step0.URL = "https://jira.example.com/browse/AUTH-100"
+	m.activeSnapshot.Tree.Epics[0].Key = "AUTH-100"
+
+	updated, cmd := m.Update(syncStepResultMsg{
+		stepIndex: 0,
+		step:      step0,
+	})
+	m = updated.(Model)
+
+	if m.SyncCurrentStep() != 1 {
+		t.Fatalf("expected current step 1, got %d", m.SyncCurrentStep())
+	}
+	if cmd == nil {
+		t.Fatalf("expected command for next step")
+	}
+
+	// Step 1 completion (Task 1)
+	step1 := m.SyncSteps()[1]
+	step1.Status = refine.StepCompleted
+	step1.Key = "AUTH-101"
+	step1.URL = "https://jira.example.com/browse/AUTH-101"
+	m.activeSnapshot.Tree.Epics[0].Tasks[0].Key = "AUTH-101"
+
+	updated, _ = m.Update(syncStepResultMsg{
+		stepIndex: 1,
+		step:      step1,
+	})
+	m = updated.(Model)
+
+	// Step 2 completion (Task 2)
+	step2 := m.SyncSteps()[2]
+	step2.Status = refine.StepCompleted
+	step2.Key = "AUTH-102"
+	step2.URL = "https://jira.example.com/browse/AUTH-102"
+	m.activeSnapshot.Tree.Epics[0].Tasks[1].Key = "AUTH-102"
+
+	updated, _ = m.Update(syncStepResultMsg{
+		stepIndex: 2,
+		step:      step2,
+	})
+	m = updated.(Model)
+
+	// Step 3 completion (Dependency link)
+	step3 := m.SyncSteps()[3]
+	step3.Status = refine.StepCompleted
+
+	updated, _ = m.Update(syncStepResultMsg{
+		stepIndex: 3,
+		step:      step3,
+	})
+	m = updated.(Model)
+
+	if m.SyncState() != SyncStateSuccess {
+		t.Fatalf("expected SyncStateSuccess, got %v", m.SyncState())
+	}
+	if m.ActiveSnapshot().Status != session.StatusSynced {
+		t.Fatalf("expected snapshot status %q, got %q", session.StatusSynced, m.ActiveSnapshot().Status)
+	}
+
+	// Verify persistence
+	saved, err := store.Load("STRAT-1")
+	if err != nil {
+		t.Fatalf("failed loading saved snapshot: %v", err)
+	}
+	if saved.Status != session.StatusSynced {
+		t.Fatalf("expected persisted snapshot status %q, got %q", session.StatusSynced, saved.Status)
+	}
+
+	// Check final success view
+	view := m.View()
+	if !strings.Contains(view, "Synchronization Complete") {
+		t.Errorf("expected view to contain 'Synchronization Complete', got:\n%s", view)
+	}
+	if !strings.Contains(view, "AUTH-100") || !strings.Contains(view, "https://jira.example.com/browse/AUTH-100") {
+		t.Errorf("expected view to show created key AUTH-100 and URL, got:\n%s", view)
+	}
+	if !strings.Contains(view, "AUTH-101") || !strings.Contains(view, "https://jira.example.com/browse/AUTH-101") {
+		t.Errorf("expected view to show created key AUTH-101 and URL, got:\n%s", view)
+	}
+}
+
+func TestSyncScreen_ErrorAndRetry(t *testing.T) {
+	m, _, _ := setupTestModelForSync(t)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+
+	// Step 0 fails
+	failErr := errors.New("403 Forbidden: insufficient Jira permissions")
+	updated, _ = m.Update(syncStepResultMsg{
+		stepIndex: 0,
+		err:       failErr,
+	})
+	m = updated.(Model)
+
+	if m.SyncState() != SyncStateFailed {
+		t.Fatalf("expected SyncStateFailed, got %v", m.SyncState())
+	}
+	if m.SyncError() == nil || !strings.Contains(m.SyncError().Error(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden error recorded, got %v", m.SyncError())
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "403 Forbidden") {
+		t.Errorf("expected view to display error message, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Retry") {
+		t.Errorf("expected view to show retry option, got:\n%s", view)
+	}
+
+	// Press 'r' to retry
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = updated.(Model)
+
+	if m.SyncState() != SyncStateRunning {
+		t.Fatalf("expected SyncStateRunning after retry, got %v", m.SyncState())
+	}
+	if m.SyncError() != nil {
+		t.Fatalf("expected sync error to be cleared on retry, got %v", m.SyncError())
+	}
+	if cmd == nil {
+		t.Fatalf("expected non-nil command returned for retry")
+	}
+}
+
+func TestSyncScreen_Navigation(t *testing.T) {
+	m, _, _ := setupTestModelForSync(t)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+
+	// In failed state, pressing 'esc' or 'b' returns to ScreenTree
+	updated, _ = m.Update(syncStepResultMsg{
+		stepIndex: 0,
+		err:       errors.New("network timeout"),
+	})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	m = updated.(Model)
+	if m.Screen() != ScreenTree {
+		t.Fatalf("expected ScreenTree after pressing 'b' in failed state, got %v", m.Screen())
+	}
+
+	// Back to sync, finish, then 'p' returns to ScreenPicker
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+
+	// Complete all steps
+	for i := 0; i < len(m.SyncSteps()); i++ {
+		st := m.SyncSteps()[i]
+		st.Status = refine.StepCompleted
+		st.Key = fmt.Sprintf("AUTH-%d", 200+i)
+		st.URL = fmt.Sprintf("https://jira.example.com/browse/AUTH-%d", 200+i)
+		updated, _ = m.Update(syncStepResultMsg{stepIndex: i, step: st})
+		m = updated.(Model)
+	}
+
+	if m.SyncState() != SyncStateSuccess {
+		t.Fatalf("expected SyncStateSuccess, got %v", m.SyncState())
+	}
+
+	// Press 'p' to return to picker
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = updated.(Model)
+	if m.Screen() != ScreenPicker {
+		t.Fatalf("expected ScreenPicker after pressing 'p' in success state, got %v", m.Screen())
+	}
+}
+
 
 
 

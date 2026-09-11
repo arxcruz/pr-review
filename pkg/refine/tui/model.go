@@ -27,6 +27,17 @@ const (
 	ScreenPicker Screen = iota
 	ScreenInterview
 	ScreenTree
+	ScreenSync
+)
+
+// SyncState indicates the current progress state of synchronization.
+type SyncState int
+
+const (
+	SyncStateIdle SyncState = iota
+	SyncStateRunning
+	SyncStateFailed
+	SyncStateSuccess
 )
 
 // TreeItemKind indicates whether a tree item is an Epic or Task.
@@ -94,6 +105,12 @@ type refinementFinalizedMsg struct {
 	err  error
 }
 
+type syncStepResultMsg struct {
+	stepIndex int
+	step      refine.SyncStep
+	err       error
+}
+
 // ResumeModalState manages the state of the resume-or-fresh confirmation dialog.
 type ResumeModalState struct {
 	Active   bool
@@ -144,6 +161,14 @@ type Model struct {
 	treeEditing          bool
 	treeEditField        TreeEditField
 	syncProceedRequested bool
+
+	// Sync execution state
+	syncState       SyncState
+	syncSteps       []refine.SyncStep
+	syncCurrentStep int
+	syncError       error
+	syncIDMap       map[string]string
+	syncViewport    viewport.Model
 
 	// Status messages
 	statusMsg   string
@@ -240,6 +265,8 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 		Bold(true)
 	tbl.SetStyles(tStyle)
 
+	syncVp := viewport.New(80, 20)
+
 	m := Model{
 		cfg:            cfg,
 		jiraClient:     client,
@@ -251,6 +278,8 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 		interviewInput: interviewTi,
 		treeInput:      treeTi,
 		viewport:       vp,
+		syncViewport:   syncVp,
+		syncIDMap:      make(map[string]string),
 		spinner:        s,
 		loading:        true,
 		loadingMsg:     "Loading recent tickets from Origin Project...",
@@ -276,6 +305,10 @@ func (m Model) TreeCursor() int                       { return m.treeIndex }
 func (m Model) TreeEditing() bool                     { return m.treeEditing }
 func (m Model) TreeEditField() TreeEditField          { return m.treeEditField }
 func (m Model) SyncProceedRequested() bool            { return m.syncProceedRequested }
+func (m Model) SyncState() SyncState                  { return m.syncState }
+func (m Model) SyncSteps() []refine.SyncStep          { return m.syncSteps }
+func (m Model) SyncCurrentStep() int                  { return m.syncCurrentStep }
+func (m Model) SyncError() error                      { return m.syncError }
 func (m Model) Tickets() []jira.RecentTicket          { return m.tickets }
 func (m Model) PickerFocus() PickerFocus              { return m.pickerFocus }
 func (m Model) InputValue() string                    { return m.input.Value() }
@@ -473,6 +506,28 @@ func (m Model) finalizeRefinementCmd() tea.Cmd {
 	}
 }
 
+func (m Model) executeSyncStepCmd(stepIndex int) tea.Cmd {
+	return func() tea.Msg {
+		if m.activeSnapshot == nil || stepIndex < 0 || stepIndex >= len(m.syncSteps) {
+			return syncStepResultMsg{stepIndex: stepIndex, err: errors.New("invalid sync step")}
+		}
+
+		step := m.syncSteps[stepIndex]
+		var jiraCfg *config.JiraConfig
+		if m.cfg != nil {
+			jiraCfg = &m.cfg.Jira
+		}
+		syncer := refine.NewSyncer(m.jiraClient, m.sessionStore, jiraCfg)
+		ctx := context.Background()
+		err := syncer.ExecuteStep(ctx, m.activeSnapshot, &step, m.syncIDMap)
+		return syncStepResultMsg{
+			stepIndex: stepIndex,
+			step:      step,
+			err:       err,
+		}
+	}
+}
+
 // Update handles incoming messages and updates state
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -489,6 +544,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)
 		}
+
+	case syncStepResultMsg:
+		if msg.err != nil {
+			m.syncState = SyncStateFailed
+			m.syncError = msg.err
+			if msg.stepIndex >= 0 && msg.stepIndex < len(m.syncSteps) {
+				m.syncSteps[msg.stepIndex].Status = refine.StepFailed
+				m.syncSteps[msg.stepIndex].Error = msg.err.Error()
+			}
+			m.loading = false
+			m.statusMsg = fmt.Sprintf("Sync failed at step %d: %v", msg.stepIndex+1, msg.err)
+			m.statusIsErr = true
+			return m, nil
+		}
+
+		if msg.stepIndex >= 0 && msg.stepIndex < len(m.syncSteps) {
+			m.syncSteps[msg.stepIndex] = msg.step
+			if msg.step.Key != "" {
+				m.syncIDMap[msg.step.ID] = msg.step.Key
+			}
+		}
+
+		m.syncCurrentStep = msg.stepIndex + 1
+		if m.syncCurrentStep >= len(m.syncSteps) {
+			m.syncState = SyncStateSuccess
+			m.loading = false
+			if m.activeSnapshot != nil {
+				m.activeSnapshot.Status = session.StatusSynced
+				if m.sessionStore != nil {
+					_ = m.sessionStore.Save(m.activeSnapshot)
+				}
+			}
+			m.statusMsg = "All Jira issues and links synchronized successfully!"
+			m.statusIsErr = false
+			return m, nil
+		}
+
+		if m.syncCurrentStep < len(m.syncSteps) {
+			m.syncSteps[m.syncCurrentStep].Status = refine.StepRunning
+			m.loadingMsg = fmt.Sprintf("Executing step %d/%d: %s...", m.syncCurrentStep+1, len(m.syncSteps), m.syncSteps[m.syncCurrentStep].Title)
+		}
+
+		return m, m.executeSyncStepCmd(m.syncCurrentStep)
 
 	case recentTicketsLoadedMsg:
 		m.loading = false
@@ -914,6 +1012,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusIsErr = true
 					return m, nil
 				}
+				steps, err := syncer.PlanSteps(m.activeSnapshot)
+				if err != nil {
+					m.statusMsg = fmt.Sprintf("Failed planning sync: %v", err)
+					m.statusIsErr = true
+					return m, nil
+				}
+
 				m.syncProceedRequested = true
 				includedEpics := 0
 				includedTasks := 0
@@ -929,8 +1034,82 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.statusMsg = fmt.Sprintf("Ready to synchronize %d epic(s) and %d task(s) with Jira.", includedEpics, includedTasks)
 				m.statusIsErr = false
+
+				m.screen = ScreenSync
+				m.syncSteps = steps
+				m.syncCurrentStep = 0
+				m.syncState = SyncStateRunning
+				m.syncError = nil
+				m.syncIDMap = make(map[string]string)
+				for _, e := range m.activeSnapshot.Tree.Epics {
+					if e.Key != "" {
+						m.syncIDMap[e.ID] = e.Key
+					}
+					for _, t := range e.Tasks {
+						if t.Key != "" {
+							m.syncIDMap[t.ID] = t.Key
+						}
+					}
+				}
+				m.loading = true
+				if len(steps) > 0 {
+					m.syncSteps[0].Status = refine.StepRunning
+					m.loadingMsg = fmt.Sprintf("Executing step 1/%d: %s...", len(steps), steps[0].Title)
+					return m, tea.Batch(m.spinner.Tick, m.executeSyncStepCmd(0))
+				}
+				m.syncState = SyncStateSuccess
+				m.loading = false
+				if m.activeSnapshot != nil {
+					m.activeSnapshot.Status = session.StatusSynced
+					if m.sessionStore != nil {
+						_ = m.sessionStore.Save(m.activeSnapshot)
+					}
+				}
 				return m, nil
 			}
+		}
+
+		// Sync screen handling
+		if m.screen == ScreenSync {
+			switch k {
+			case "q":
+				if m.syncState == SyncStateSuccess || m.syncState == SyncStateFailed {
+					return m, tea.Quit
+				}
+			case "r", "R":
+				if m.syncState == SyncStateFailed {
+					m.syncState = SyncStateRunning
+					m.syncError = nil
+					if m.syncCurrentStep < len(m.syncSteps) {
+						m.syncSteps[m.syncCurrentStep].Status = refine.StepRunning
+						m.syncSteps[m.syncCurrentStep].Error = ""
+					}
+					m.loading = true
+					m.loadingMsg = fmt.Sprintf("Retrying step %d/%d: %s...", m.syncCurrentStep+1, len(m.syncSteps), m.syncSteps[m.syncCurrentStep].Title)
+					m.statusMsg = fmt.Sprintf("Retrying step %d...", m.syncCurrentStep+1)
+					m.statusIsErr = false
+					return m, tea.Batch(m.spinner.Tick, m.executeSyncStepCmd(m.syncCurrentStep))
+				}
+			case "esc", "b":
+				if m.syncState == SyncStateFailed || m.syncState == SyncStateSuccess {
+					m.screen = ScreenTree
+					m.statusMsg = "Returned to Decomposition Tree review"
+					m.statusIsErr = false
+					return m, nil
+				}
+			case "p", "P":
+				if m.syncState == SyncStateSuccess {
+					m.screen = ScreenPicker
+					m.statusMsg = "Returned to Ticket Picker"
+					m.statusIsErr = false
+					return m, nil
+				}
+			case "up", "k", "down", "j", "pgup", "pgdown":
+				var cmd tea.Cmd
+				m.syncViewport, cmd = m.syncViewport.Update(msg)
+				return m, cmd
+			}
+			return m, nil
 		}
 	}
 
@@ -1124,4 +1303,6 @@ func (m *Model) updateLayout() {
 	}
 	m.viewport.Width = m.width - 4
 	m.viewport.Height = vpHeight
+	m.syncViewport.Width = m.width - 4
+	m.syncViewport.Height = vpHeight
 }

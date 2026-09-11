@@ -591,3 +591,175 @@ func TestSyncer_Sync_PartialResume(t *testing.T) {
 		t.Errorf("expected existing status for EPIC-1, got %s", res.EpicsCreated[0].Status)
 	}
 }
+
+func TestSyncer_PlanSteps(t *testing.T) {
+	cfg := &config.JiraConfig{
+		URL:           "https://jira.example.com",
+		OriginProject: "STRAT",
+	}
+	client := newMockJiraSyncClient()
+	store := &memorySessionStore{}
+	syncer := NewSyncer(client, store, cfg)
+
+	snap := &session.Snapshot{
+		Key:    "STRAT-100",
+		Status: session.StatusInProgress,
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:              "EPIC-1",
+					Title:           "Authentication",
+					DeliveryProject: "AUTH",
+					Tasks: []session.DecompositionTask{
+						{
+							ID:              "TASK-1",
+							Title:           "DB Tables",
+							DeliveryProject: "AUTH",
+						},
+						{
+							ID:              "TASK-2",
+							Title:           "Login Route",
+							DeliveryProject: "AUTH",
+							DependsOn:       []string{"TASK-1"},
+						},
+					},
+				},
+				{
+					ID:              "EPIC-2",
+					Title:           "Excluded Epic",
+					Excluded:        true,
+					DeliveryProject: "AUTH",
+					Tasks: []session.DecompositionTask{
+						{
+							ID:              "TASK-3",
+							Title:           "Ignored",
+							DeliveryProject: "AUTH",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	steps, err := syncer.PlanSteps(snap)
+	if err != nil {
+		t.Fatalf("unexpected error planning steps: %v", err)
+	}
+
+	// Should have 1 epic step + 2 task steps + 1 dependency link step = 4 steps
+	if len(steps) != 4 {
+		t.Fatalf("expected 4 steps, got %d", len(steps))
+	}
+
+	if steps[0].Kind != SyncStepCreateEpic || steps[0].ID != "EPIC-1" {
+		t.Errorf("step 0 expected CreateEpic for EPIC-1, got %v for %s", steps[0].Kind, steps[0].ID)
+	}
+	if steps[1].Kind != SyncStepCreateTask || steps[1].ID != "TASK-1" {
+		t.Errorf("step 1 expected CreateTask for TASK-1, got %v for %s", steps[1].Kind, steps[1].ID)
+	}
+	if steps[2].Kind != SyncStepCreateTask || steps[2].ID != "TASK-2" {
+		t.Errorf("step 2 expected CreateTask for TASK-2, got %v for %s", steps[2].Kind, steps[2].ID)
+	}
+	if steps[3].Kind != SyncStepLinkDependency || steps[3].ID != "TASK-2" || steps[3].TargetKey != "TASK-1" {
+		t.Errorf("step 3 expected LinkDependency TASK-2 -> TASK-1, got %v for %s -> %s", steps[3].Kind, steps[3].ID, steps[3].TargetKey)
+	}
+}
+
+func TestSyncer_ExecuteStep(t *testing.T) {
+	cfg := &config.JiraConfig{
+		URL:           "https://jira.example.com",
+		OriginProject: "STRAT",
+	}
+	client := newMockJiraSyncClient()
+	store := &memorySessionStore{}
+	syncer := NewSyncer(client, store, cfg)
+
+	snap := &session.Snapshot{
+		Key:    "STRAT-100",
+		Status: session.StatusInProgress,
+		Tree: &session.DecompositionTree{
+			Epics: []session.DecompositionEpic{
+				{
+					ID:              "EPIC-1",
+					Title:           "Authentication",
+					DeliveryProject: "AUTH",
+					Tasks: []session.DecompositionTask{
+						{
+							ID:              "TASK-1",
+							Title:           "DB Tables",
+							DeliveryProject: "AUTH",
+						},
+						{
+							ID:              "TASK-2",
+							Title:           "Login Route",
+							DeliveryProject: "AUTH",
+							DependsOn:       []string{"TASK-1"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	steps, err := syncer.PlanSteps(snap)
+	if err != nil {
+		t.Fatalf("unexpected error planning steps: %v", err)
+	}
+
+	idMap := make(map[string]string)
+	ctx := context.Background()
+
+	// Execute step 0 (Create Epic)
+	err = syncer.ExecuteStep(ctx, snap, &steps[0], idMap)
+	if err != nil {
+		t.Fatalf("failed executing step 0: %v", err)
+	}
+	if steps[0].Status != StepCompleted {
+		t.Errorf("expected StepCompleted, got %v", steps[0].Status)
+	}
+	if steps[0].Key == "" {
+		t.Fatalf("expected step 0 key to be populated")
+	}
+	if steps[0].URL == "" {
+		t.Fatalf("expected step 0 URL to be populated")
+	}
+	if snap.Tree.Epics[0].Key != steps[0].Key {
+		t.Errorf("expected snapshot epic key %s, got %s", steps[0].Key, snap.Tree.Epics[0].Key)
+	}
+	if idMap["EPIC-1"] != steps[0].Key {
+		t.Errorf("expected idMap to have EPIC-1 => %s", steps[0].Key)
+	}
+
+	// Execute step 1 (Create Task 1)
+	err = syncer.ExecuteStep(ctx, snap, &steps[1], idMap)
+	if err != nil {
+		t.Fatalf("failed executing step 1: %v", err)
+	}
+	if steps[1].Status != StepCompleted {
+		t.Errorf("expected StepCompleted, got %v", steps[1].Status)
+	}
+	if snap.Tree.Epics[0].Tasks[0].Key != steps[1].Key {
+		t.Errorf("expected snapshot task key %s, got %s", steps[1].Key, snap.Tree.Epics[0].Tasks[0].Key)
+	}
+
+	// Execute step 2 (Create Task 2)
+	err = syncer.ExecuteStep(ctx, snap, &steps[2], idMap)
+	if err != nil {
+		t.Fatalf("failed executing step 2: %v", err)
+	}
+	if steps[2].Status != StepCompleted {
+		t.Errorf("expected StepCompleted, got %v", steps[2].Status)
+	}
+
+	// Execute step 3 (Link Dependency)
+	err = syncer.ExecuteStep(ctx, snap, &steps[3], idMap)
+	if err != nil {
+		t.Fatalf("failed executing step 3: %v", err)
+	}
+	if steps[3].Status != StepCompleted {
+		t.Errorf("expected StepCompleted, got %v", steps[3].Status)
+	}
+	if len(client.createDependencyCalls) != 1 {
+		t.Fatalf("expected 1 dependency link call, got %d", len(client.createDependencyCalls))
+	}
+}

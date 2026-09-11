@@ -35,6 +35,43 @@ type SyncedItem struct {
 	Status          string // "Created" or "Existing"
 }
 
+// SyncStepKind defines the action to perform in a sync step.
+type SyncStepKind string
+
+const (
+	SyncStepCreateEpic     SyncStepKind = "create_epic"
+	SyncStepCreateTask     SyncStepKind = "create_task"
+	SyncStepLinkDependency SyncStepKind = "link_dependency"
+)
+
+// SyncStepStatus represents the execution state of a sync step.
+type SyncStepStatus string
+
+const (
+	StepPending   SyncStepStatus = "pending"
+	StepRunning   SyncStepStatus = "running"
+	StepCompleted SyncStepStatus = "completed"
+	StepFailed    SyncStepStatus = "failed"
+	StepSkipped   SyncStepStatus = "skipped"
+)
+
+// SyncStep represents a discrete step in the Jira synchronization plan.
+type SyncStep struct {
+	Index       int            `json:"index"`
+	Kind        SyncStepKind   `json:"kind"`
+	ID          string         `json:"id"`
+	EpicID      string         `json:"epic_id,omitempty"`
+	Title       string         `json:"title"`
+	Description string         `json:"description,omitempty"`
+	Project     string         `json:"project"`
+	Type        string         `json:"type"`
+	Key         string         `json:"key,omitempty"`
+	TargetKey   string         `json:"target_key,omitempty"` // Parent key for task, or blocker ID/key for link
+	Status      SyncStepStatus `json:"status"`
+	Error       string         `json:"error,omitempty"`
+	URL         string         `json:"url,omitempty"`
+}
+
 // SyncResult captures the full outcome of a plan synchronization run.
 type SyncResult struct {
 	StrategicKey string
@@ -176,6 +213,315 @@ func sortTasksByDependency(epics []session.DecompositionEpic) ([]*taskRef, error
 	}
 
 	return sorted, nil
+}
+
+// PlanSteps constructs an ordered sequence of synchronization steps from the snapshot tree.
+func (s *Syncer) PlanSteps(snap *session.Snapshot) ([]SyncStep, error) {
+	if err := s.Verify(snap); err != nil {
+		return nil, err
+	}
+
+	var steps []SyncStep
+	idx := 0
+
+	baseURL := ""
+	if s.cfg != nil {
+		baseURL = strings.TrimRight(s.cfg.URL, "/")
+	}
+
+	// 1. Plan epics
+	for _, epic := range snap.Tree.Epics {
+		if epic.Excluded {
+			continue
+		}
+		epicType := epic.Type
+		if epicType == "" {
+			epicType = "Epic"
+		}
+		status := StepPending
+		url := ""
+		if epic.Key != "" {
+			status = StepCompleted
+			if baseURL != "" {
+				url = fmt.Sprintf("%s/browse/%s", baseURL, epic.Key)
+			}
+		}
+		steps = append(steps, SyncStep{
+			Index:       idx,
+			Kind:        SyncStepCreateEpic,
+			ID:          epic.ID,
+			Title:       epic.Title,
+			Description: epic.Description,
+			Project:     epic.DeliveryProject,
+			Type:        epicType,
+			Key:         epic.Key,
+			TargetKey:   snap.Key,
+			Status:      status,
+			URL:         url,
+		})
+		idx++
+	}
+
+	// 2. Sort tasks by dependency
+	sortedTasks, err := sortTasksByDependency(snap.Tree.Epics)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, ref := range sortedTasks {
+		task := ref.Task
+		taskType := task.Type
+		if taskType == "" {
+			taskType = "Task"
+		}
+		status := StepPending
+		url := ""
+		if task.Key != "" {
+			status = StepCompleted
+			if baseURL != "" {
+				url = fmt.Sprintf("%s/browse/%s", baseURL, task.Key)
+			}
+		}
+		steps = append(steps, SyncStep{
+			Index:       idx,
+			Kind:        SyncStepCreateTask,
+			ID:          task.ID,
+			EpicID:      ref.EpicID,
+			Title:       task.Title,
+			Description: task.Description,
+			Project:     task.DeliveryProject,
+			Type:        taskType,
+			Key:         task.Key,
+			Status:      status,
+			URL:         url,
+		})
+		idx++
+	}
+
+	// 3. Plan dependency links
+	for _, ref := range sortedTasks {
+		task := ref.Task
+		for _, depID := range task.DependsOn {
+			if depID == ref.EpicID {
+				continue
+			}
+			steps = append(steps, SyncStep{
+				Index:     idx,
+				Kind:      SyncStepLinkDependency,
+				ID:        task.ID,
+				EpicID:    ref.EpicID,
+				Title:     fmt.Sprintf("Link dependency: %s is blocked by %s", task.ID, depID),
+				TargetKey: depID,
+				Status:    StepPending,
+			})
+			idx++
+		}
+	}
+
+	return steps, nil
+}
+
+// ExecuteStep executes a single synchronization step against Jira and records results.
+func (s *Syncer) ExecuteStep(ctx context.Context, snap *session.Snapshot, step *SyncStep, localIDToRemoteKey map[string]string) error {
+	if s.client == nil {
+		return errors.New("jira client is required for sync")
+	}
+	if snap == nil || snap.Tree == nil {
+		return errors.New("invalid session snapshot")
+	}
+
+	linkType := ""
+	baseURL := ""
+	if s.cfg != nil {
+		linkType = s.cfg.LinkType
+		baseURL = strings.TrimRight(s.cfg.URL, "/")
+	}
+
+	step.Status = StepRunning
+
+	switch step.Kind {
+	case SyncStepCreateEpic:
+		var epic *session.DecompositionEpic
+		for i := range snap.Tree.Epics {
+			if snap.Tree.Epics[i].ID == step.ID {
+				epic = &snap.Tree.Epics[i]
+				break
+			}
+		}
+		if epic == nil {
+			err := fmt.Errorf("epic %s not found in snapshot tree", step.ID)
+			step.Status = StepFailed
+			step.Error = err.Error()
+			return err
+		}
+
+		if epic.Key == "" {
+			epicType := epic.Type
+			if epicType == "" {
+				epicType = "Epic"
+			}
+			created, err := s.client.CreateEpic(ctx, jira.CreateEpicRequest{
+				Project:     epic.DeliveryProject,
+				Summary:     epic.Title,
+				Description: epic.Description,
+				IssueType:   epicType,
+			})
+			if err != nil {
+				step.Status = StepFailed
+				step.Error = err.Error()
+				return fmt.Errorf("failed to create epic %s (%s): %w", epic.ID, epic.Title, err)
+			}
+			epic.Key = created.Key
+			if created.URL != "" {
+				step.URL = created.URL
+			} else if baseURL != "" {
+				step.URL = fmt.Sprintf("%s/browse/%s", baseURL, epic.Key)
+			}
+		} else {
+			if step.URL == "" && baseURL != "" {
+				step.URL = fmt.Sprintf("%s/browse/%s", baseURL, epic.Key)
+			}
+		}
+
+		// Ensure epic is linked to strategic ticket
+		_, err := s.client.LinkStrategicTicket(ctx, jira.StrategicLinkRequest{
+			ChildKey:  epic.Key,
+			OriginKey: snap.Key,
+			LinkType:  linkType,
+		})
+		if err != nil {
+			step.Status = StepFailed
+			step.Error = err.Error()
+			return fmt.Errorf("failed to link epic %s (%s) to strategic ticket %s: %w", epic.ID, epic.Key, snap.Key, err)
+		}
+
+		if s.store != nil {
+			if err := s.store.Save(snap); err != nil {
+				step.Status = StepFailed
+				step.Error = err.Error()
+				return fmt.Errorf("failed to save intermediate snapshot after epic %s: %w", epic.ID, err)
+			}
+		}
+
+		step.Key = epic.Key
+		localIDToRemoteKey[epic.ID] = epic.Key
+		step.Status = StepCompleted
+		step.Error = ""
+		return nil
+
+	case SyncStepCreateTask:
+		var task *session.DecompositionTask
+		var parentEpic *session.DecompositionEpic
+		for i := range snap.Tree.Epics {
+			for j := range snap.Tree.Epics[i].Tasks {
+				if snap.Tree.Epics[i].Tasks[j].ID == step.ID {
+					task = &snap.Tree.Epics[i].Tasks[j]
+					parentEpic = &snap.Tree.Epics[i]
+					break
+				}
+			}
+			if task != nil {
+				break
+			}
+		}
+		if task == nil {
+			err := fmt.Errorf("task %s not found in snapshot tree", step.ID)
+			step.Status = StepFailed
+			step.Error = err.Error()
+			return err
+		}
+
+		parentKey := localIDToRemoteKey[step.EpicID]
+		if parentKey == "" && parentEpic != nil {
+			parentKey = parentEpic.Key
+		}
+		step.TargetKey = parentKey
+
+		if task.Key == "" {
+			taskType := task.Type
+			if taskType == "" {
+				taskType = "Task"
+			}
+			created, err := s.client.CreateTask(ctx, jira.CreateTaskRequest{
+				Project:            task.DeliveryProject,
+				Summary:            task.Title,
+				Description:        task.Description,
+				IssueType:          taskType,
+				ParentKey:          parentKey,
+				AcceptanceCriteria: task.AcceptanceCriteria,
+			})
+			if err != nil {
+				step.Status = StepFailed
+				step.Error = err.Error()
+				return fmt.Errorf("failed to create task %s (%s): %w", task.ID, task.Title, err)
+			}
+			task.Key = created.Key
+			if created.URL != "" {
+				step.URL = created.URL
+			} else if baseURL != "" {
+				step.URL = fmt.Sprintf("%s/browse/%s", baseURL, task.Key)
+			}
+
+			if s.store != nil {
+				if err := s.store.Save(snap); err != nil {
+					step.Status = StepFailed
+					step.Error = err.Error()
+					return fmt.Errorf("failed to save intermediate snapshot after task %s: %w", task.ID, err)
+				}
+			}
+		} else {
+			if step.URL == "" && baseURL != "" {
+				step.URL = fmt.Sprintf("%s/browse/%s", baseURL, task.Key)
+			}
+		}
+
+		step.Key = task.Key
+		localIDToRemoteKey[task.ID] = task.Key
+		step.Status = StepCompleted
+		step.Error = ""
+		return nil
+
+	case SyncStepLinkDependency:
+		taskKey := localIDToRemoteKey[step.ID]
+		depKey := localIDToRemoteKey[step.TargetKey]
+		if taskKey == "" || depKey == "" {
+			for i := range snap.Tree.Epics {
+				for j := range snap.Tree.Epics[i].Tasks {
+					t := &snap.Tree.Epics[i].Tasks[j]
+					if t.ID == step.ID && taskKey == "" {
+						taskKey = t.Key
+					}
+					if t.ID == step.TargetKey && depKey == "" {
+						depKey = t.Key
+					}
+				}
+			}
+		}
+
+		if taskKey == "" || depKey == "" {
+			err := fmt.Errorf("cannot link dependency: missing Jira key for %s or %s", step.ID, step.TargetKey)
+			step.Status = StepFailed
+			step.Error = err.Error()
+			return err
+		}
+
+		if taskKey != depKey {
+			err := s.client.CreateDependencyLink(ctx, taskKey, depKey)
+			if err != nil {
+				step.Status = StepFailed
+				step.Error = err.Error()
+				return fmt.Errorf("failed to link dependency between %s (%s) and %s (%s): %w", step.ID, taskKey, step.TargetKey, depKey, err)
+			}
+		}
+
+		step.Key = taskKey
+		step.Status = StepCompleted
+		step.Error = ""
+		return nil
+
+	default:
+		return fmt.Errorf("unknown sync step kind: %s", step.Kind)
+	}
 }
 
 // Sync synchronizes the decomposed items with Jira.

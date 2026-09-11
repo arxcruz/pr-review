@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/arxcruz/pr-review/pkg/refine"
 	"github.com/arxcruz/pr-review/pkg/session"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -22,6 +23,8 @@ func (m Model) View() string {
 		content = m.renderInterviewView()
 	case ScreenTree:
 		content = m.renderTreeView()
+	case ScreenSync:
+		content = m.renderSyncView()
 	default:
 		content = m.renderPickerView()
 	}
@@ -427,4 +430,239 @@ func (m Model) overlayModal(bg string, modal string) string {
 		modal,
 		lipgloss.WithWhitespaceChars(" "),
 	)
+}
+
+func (m Model) renderSyncView() string {
+	var b strings.Builder
+
+	key := "Unknown"
+	if m.activeSnapshot != nil {
+		key = m.activeSnapshot.Key
+	}
+
+	header := titleStyle.Render("Jira Refine") + " " +
+		projectBadgeStyle.Render(key) + " " +
+		headerInfoStyle.Render("Jira Synchronization & Live Progress")
+	b.WriteString(header + "\n\n")
+
+	total := len(m.syncSteps)
+	completed := 0
+	for _, st := range m.syncSteps {
+		if st.Status == refine.StepCompleted {
+			completed++
+		}
+	}
+
+	percent := 0
+	if total > 0 {
+		percent = (completed * 100) / total
+	}
+
+	// Progress bar
+	barWidth := 30
+	if m.width > 60 {
+		barWidth = 40
+	}
+	filled := 0
+	if total > 0 {
+		filled = (completed * barWidth) / total
+	}
+	bar := "[" + lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render(strings.Repeat("█", filled)) +
+		lipgloss.NewStyle().Foreground(mutedColor).Render(strings.Repeat("░", barWidth-filled)) + "]"
+	progressLine := fmt.Sprintf("Progress: %s  %d%% (%d/%d items)", bar, percent, completed, total)
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render(progressLine) + "\n\n")
+
+	if m.syncState == SyncStateSuccess {
+		// Final success summary view
+		var summary strings.Builder
+		summary.WriteString(lipgloss.NewStyle().Bold(true).Foreground(secondaryColor).Render("✓ Jira Synchronization Complete! All items created successfully.\n\n"))
+		summary.WriteString(fmt.Sprintf("Strategic Ticket: %s\n\n", key))
+		summary.WriteString(lipgloss.NewStyle().Bold(true).Render("Created Jira Issues & Clickable URLs:\n\n"))
+
+		baseURL := ""
+		if m.cfg != nil {
+			baseURL = strings.TrimRight(m.cfg.Jira.URL, "/")
+		}
+
+		if m.activeSnapshot != nil && m.activeSnapshot.Tree != nil {
+			for _, epic := range m.activeSnapshot.Tree.Epics {
+				if epic.Excluded {
+					continue
+				}
+				epicURL := ""
+				if baseURL != "" && epic.Key != "" {
+					epicURL = fmt.Sprintf("%s/browse/%s", baseURL, epic.Key)
+				}
+				clickableEpicKey := formatClickableURL(epic.Key, epicURL)
+				summary.WriteString(fmt.Sprintf("• [%s] %s (%s) [%s]\n",
+					lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#58A6FF")).Render(epic.ID),
+					clickableEpicKey,
+					epic.Title,
+					epic.DeliveryProject,
+				))
+				if epicURL != "" {
+					summary.WriteString(fmt.Sprintf("  URL: %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#58A6FF")).Underline(true).Render(epicURL)))
+				}
+				for _, task := range epic.Tasks {
+					if task.Excluded {
+						continue
+					}
+					taskURL := ""
+					if baseURL != "" && task.Key != "" {
+						taskURL = fmt.Sprintf("%s/browse/%s", baseURL, task.Key)
+					}
+					clickableTaskKey := formatClickableURL(task.Key, taskURL)
+					summary.WriteString(fmt.Sprintf("  └─ [%s] %s (%s) [%s]\n",
+						lipgloss.NewStyle().Foreground(lipgloss.Color("#7EE787")).Render(task.ID),
+						clickableTaskKey,
+						task.Title,
+						task.DeliveryProject,
+					))
+					if taskURL != "" {
+						summary.WriteString(fmt.Sprintf("     URL: %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#58A6FF")).Underline(true).Render(taskURL)))
+					}
+				}
+				summary.WriteString("\n")
+			}
+
+			// Dependency links
+			var depLines []string
+			for _, epic := range m.activeSnapshot.Tree.Epics {
+				for _, task := range epic.Tasks {
+					for _, depID := range task.DependsOn {
+						if depID == epic.ID {
+							continue
+						}
+						depKey := m.syncIDMap[depID]
+						if depKey == "" {
+							depKey = depID
+						}
+						taskKey := m.syncIDMap[task.ID]
+						if taskKey == "" {
+							taskKey = task.Key
+						}
+						depLines = append(depLines, fmt.Sprintf("• %s [%s] is blocked by %s [%s]", taskKey, task.ID, depKey, depID))
+					}
+				}
+			}
+			if len(depLines) > 0 {
+				summary.WriteString(lipgloss.NewStyle().Bold(true).Render("Dependency Links:\n"))
+				for _, dl := range depLines {
+					summary.WriteString("  " + dl + "\n")
+				}
+				summary.WriteString("\n")
+			}
+		}
+
+		summary.WriteString(explanationStyle.Render("Session snapshot marked as completed (synced)."))
+
+		vp := m.syncViewport
+		vp.SetContent(summary.String())
+		vpHeight := m.height - 12
+		if vpHeight < 5 {
+			vpHeight = 5
+		}
+		b.WriteString(boxStyle.Width(m.width - 4).Height(vpHeight).Render(vp.View()) + "\n\n")
+
+		actionButtons := fmt.Sprintf(" %s    %s",
+			activeBoxStyle.Render("[ Return to Ticket Picker (P) ]"),
+			boxStyle.Render("[ Return to Tree Review (B/Esc) ]"),
+		)
+		b.WriteString(actionButtons + "\n\n")
+	} else {
+		// Running or Failed state
+		var stepLines strings.Builder
+		stepLines.WriteString(lipgloss.NewStyle().Bold(true).Render("=== Synchronization Step Execution ===\n\n"))
+
+		for i, st := range m.syncSteps {
+			var icon string
+			var stStyle lipgloss.Style
+			switch st.Status {
+			case refine.StepCompleted:
+				icon = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true).Render("✓")
+				stStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
+			case refine.StepRunning:
+				icon = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("▶")
+				stStyle = lipgloss.NewStyle().Bold(true).Foreground(primaryColor)
+			case refine.StepFailed:
+				icon = lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("✖")
+				stStyle = lipgloss.NewStyle().Bold(true).Foreground(accentColor)
+			default:
+				icon = lipgloss.NewStyle().Foreground(mutedColor).Render("⏳")
+				stStyle = lipgloss.NewStyle().Foreground(mutedColor)
+			}
+
+			line := fmt.Sprintf(" %s %s [%s] %s",
+				icon,
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#8B949E")).Render(fmt.Sprintf("%2d.", i+1)),
+				st.ID,
+				st.Title,
+			)
+			if st.Key != "" {
+				line += " -> " + lipgloss.NewStyle().Bold(true).Foreground(secondaryColor).Render(st.Key)
+			}
+			if st.Status == refine.StepRunning {
+				line += " " + m.spinner.View()
+			}
+			if st.Error != "" {
+				line += "\n     " + lipgloss.NewStyle().Foreground(accentColor).Render("Error: "+st.Error)
+			}
+			stepLines.WriteString(stStyle.Render(line) + "\n")
+		}
+
+		vp := m.syncViewport
+		vp.SetContent(stepLines.String())
+		vpHeight := m.height - 14
+		if m.syncState == SyncStateFailed {
+			vpHeight -= 4
+		}
+		if vpHeight < 5 {
+			vpHeight = 5
+		}
+		b.WriteString(boxStyle.Width(m.width - 4).Height(vpHeight).Render(vp.View()) + "\n")
+
+		if m.syncState == SyncStateFailed && m.syncError != nil {
+			errText := fmt.Sprintf("✖ Error during synchronization:\n%s\n\nPress [r] to Retry failed item, [b/esc] to return to Decomposition Tree, [q] to Quit.", m.syncError.Error())
+			b.WriteString(activeBoxStyle.Width(m.width - 4).BorderForeground(accentColor).Render(errText) + "\n\n")
+		} else {
+			b.WriteString("\n")
+		}
+	}
+
+	statusLine := m.renderStatusLine()
+	if statusLine != "" {
+		b.WriteString(statusLine + "\n")
+	}
+
+	b.WriteString(statusBar.Width(m.width).Render(m.renderSyncHelp()))
+	return b.String()
+}
+
+func (m Model) renderSyncHelp() string {
+	if m.syncState == SyncStateFailed {
+		return fmt.Sprintf("%s %s  •  %s %s  •  %s %s",
+			helpKey.Render("[r]"), helpDesc.Render("Retry Failed Item"),
+			helpKey.Render("[b/esc]"), helpDesc.Render("Back to Tree Editor"),
+			helpKey.Render("[q]"), helpDesc.Render("Quit"),
+		)
+	}
+	if m.syncState == SyncStateSuccess {
+		return fmt.Sprintf("%s %s  •  %s %s  •  %s %s",
+			helpKey.Render("[p]"), helpDesc.Render("Ticket Picker"),
+			helpKey.Render("[b/esc]"), helpDesc.Render("Back to Tree Review"),
+			helpKey.Render("[q]"), helpDesc.Render("Quit"),
+		)
+	}
+
+	return fmt.Sprintf("%s %s  •  %s %s",
+		helpKey.Render("[↑/↓]"), helpDesc.Render("Scroll Steps"),
+		helpKey.Render("[Ctrl+C]"), helpDesc.Render("Quit"),
+	)
+}
+
+func formatClickableURL(key, rawURL string) string {
+	if rawURL == "" || key == "" {
+		return key
+	}
+	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\\", rawURL, key)
 }
