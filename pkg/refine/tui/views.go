@@ -145,7 +145,13 @@ func (m Model) renderInterviewView() string {
 
 		vp := m.viewport
 		vp.SetContent(content.String())
-		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 10).Render(vp.View()) + "\n\n")
+		b.WriteString(boxStyle.Width(m.width - 4).Height(m.height - 12).Render(vp.View()) + "\n")
+
+		actionButtons := fmt.Sprintf(" %s    %s",
+			activeBoxStyle.Render("[ Submit Round (Ctrl+S) ]"),
+			boxStyle.Render("[ Finalize Refinement (Ctrl+F) ]"),
+		)
+		b.WriteString(actionButtons + "\n\n")
 	} else if m.activeSnapshot != nil && m.activeSnapshot.Status == session.StatusFinalized {
 		var content strings.Builder
 		content.WriteString(titleStyle.Render("Refinement Session Finalized!") + "\n\n")

@@ -341,6 +341,10 @@ func (m Model) finalizeRefinementCmd() tea.Cmd {
 			return refinementFinalizedMsg{err: errors.New("no active session snapshot")}
 		}
 		ctx := context.Background()
+		if len(m.activeSnapshot.CurrentFrontier) > 0 {
+			m.activeSnapshot.AdvanceRound()
+		}
+
 		var tree *session.DecompositionTree
 		if m.activeSnapshot.Tree != nil {
 			tree = m.activeSnapshot.Tree
@@ -589,13 +593,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "enter":
 					if m.activeSnapshot != nil && m.interviewIndex >= 0 && m.interviewIndex < len(m.activeSnapshot.CurrentFrontier) {
 						val := strings.TrimSpace(m.interviewInput.Value())
-						m.activeSnapshot.CurrentFrontier[m.interviewIndex].Answer = val
-						if m.sessionStore != nil {
-							_ = m.sessionStore.Save(m.activeSnapshot)
+						if val == "" {
+							val = m.activeSnapshot.CurrentFrontier[m.interviewIndex].Recommendation
 						}
-						if m.interviewIndex < len(m.activeSnapshot.CurrentFrontier)-1 {
-							m.interviewIndex++
-						}
+						m.recordCurrentQuestionAnswer(val)
 					}
 					m.interviewEditing = false
 					m.interviewInput.Blur()
@@ -620,6 +621,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "q":
 				return m, tea.Quit
 
+			case "pgup", "pgdown", "u", "d":
+				var cmd tea.Cmd
+				m.viewport, cmd = m.viewport.Update(msg)
+				return m, cmd
+
 			case "up", "k":
 				if m.interviewIndex > 0 {
 					m.interviewIndex--
@@ -636,13 +642,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.activeSnapshot != nil && m.interviewIndex >= 0 && m.interviewIndex < len(m.activeSnapshot.CurrentFrontier) {
 					q := &m.activeSnapshot.CurrentFrontier[m.interviewIndex]
 					if q.Recommendation != "" {
-						q.Answer = q.Recommendation
-						if m.sessionStore != nil {
-							_ = m.sessionStore.Save(m.activeSnapshot)
-						}
-						if m.interviewIndex < len(m.activeSnapshot.CurrentFrontier)-1 {
-							m.interviewIndex++
-						}
+						m.recordCurrentQuestionAnswer(q.Recommendation)
 						m.statusMsg = fmt.Sprintf("Accepted recommendation for [%s]", q.ID)
 						m.statusIsErr = false
 					}
@@ -654,13 +654,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					q := &m.activeSnapshot.CurrentFrontier[m.interviewIndex]
 					optIdx := int(k[0] - '1')
 					if optIdx >= 0 && optIdx < len(q.Options) {
-						q.Answer = q.Options[optIdx]
-						if m.sessionStore != nil {
-							_ = m.sessionStore.Save(m.activeSnapshot)
-						}
-						if m.interviewIndex < len(m.activeSnapshot.CurrentFrontier)-1 {
-							m.interviewIndex++
-						}
+						m.recordCurrentQuestionAnswer(q.Options[optIdx])
 						m.statusMsg = fmt.Sprintf("Selected option for [%s]", q.ID)
 						m.statusIsErr = false
 						return m, nil
@@ -748,6 +742,19 @@ func (m *Model) startFreshSession(key string, ticket *jira.Ticket) tea.Cmd {
 	m.statusMsg = fmt.Sprintf("Started refinement session for %s", key)
 	m.statusIsErr = false
 	return nil
+}
+
+func (m *Model) recordCurrentQuestionAnswer(ans string) {
+	if m.activeSnapshot == nil || m.interviewIndex < 0 || m.interviewIndex >= len(m.activeSnapshot.CurrentFrontier) {
+		return
+	}
+	m.activeSnapshot.CurrentFrontier[m.interviewIndex].Answer = ans
+	if m.sessionStore != nil {
+		_ = m.sessionStore.Save(m.activeSnapshot)
+	}
+	if m.interviewIndex < len(m.activeSnapshot.CurrentFrontier)-1 {
+		m.interviewIndex++
+	}
 }
 
 func (m *Model) updateLayout() {

@@ -471,7 +471,7 @@ func TestInterview_FrontierQuestionsViewRendering(t *testing.T) {
 		Status: session.StatusInProgress,
 		Ticket: jira.Ticket{
 			Key:     "STRAT-1",
-			Summary: "Strategic Initiative",
+			Summary: "Strategic Architecture Redesign",
 		},
 		CurrentFrontier: []session.Question{
 			{
@@ -849,6 +849,42 @@ func TestInterview_FinalizeRefinementShortcut(t *testing.T) {
 		t.Fatalf("expected finalized in view, got: %s", view)
 	}
 }
+
+func TestInterview_ActionButtonsAndScrolling(t *testing.T) {
+	m, _, store := setupTestModel(t)
+	snap := &session.Snapshot{
+		Key:    "STRAT-1",
+		Status: session.StatusInProgress,
+		CurrentFrontier: []session.Question{
+			{
+				ID:             "Q1",
+				Title:          "Architecture Direction",
+				Recommendation: "Modular monolith",
+			},
+		},
+	}
+	_ = store.Save(snap)
+	m.activeSnapshot = snap
+	m.screen = ScreenInterview
+	m.loading = false
+
+	// Verify action buttons rendered
+	view := m.View()
+	if !strings.Contains(view, "Finalize Refinement (Ctrl+F)") {
+		t.Fatalf("expected finalize action button in view, got: %s", view)
+	}
+	if !strings.Contains(view, "Submit Round (Ctrl+S)") {
+		t.Fatalf("expected submit round action button in view, got: %s", view)
+	}
+
+	// Verify scroll key updates viewport without error
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(Model)
+	if m.Screen() != ScreenInterview {
+		t.Fatalf("expected to remain on ScreenInterview after pgdown")
+	}
+}
+
 
 
 
