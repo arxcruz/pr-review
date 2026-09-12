@@ -297,6 +297,7 @@ func runTUI(opts *rootOptions, initialKey string) error {
 
 	modelOpts := []refinetui.Option{
 		refinetui.WithAIEngine(aiEngine),
+		refinetui.WithInitialAIProvider(opts.provider),
 		refinetui.WithPlanFile(opts.planFile),
 		refinetui.WithFrontierOptions(refine.FrontierOptions{
 			DocContext: docContext,

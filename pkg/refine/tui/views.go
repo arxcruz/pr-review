@@ -81,6 +81,10 @@ func (m Model) View() string {
 		content = m.overlayModal(content, m.renderResumeModal())
 	}
 
+	if m.aiSelectorModal {
+		content = m.overlayModal(content, m.renderAISelectorModal())
+	}
+
 	return content
 }
 
@@ -383,12 +387,13 @@ func (m Model) renderInterviewHelp() string {
 		)
 	}
 
-	return fmt.Sprintf("%s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s",
+	return fmt.Sprintf("%s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s",
 		helpKey.Render("[↑/↓/j/k]"), helpDesc.Render("Navigate"),
 		helpKey.Render("[Enter/y]"), helpDesc.Render("Accept Recommendation"),
 		helpKey.Render("[e]"), helpDesc.Render("Custom Answer"),
 		helpKey.Render("[Ctrl+S]"), helpDesc.Render("Submit Round"),
 		helpKey.Render("[Ctrl+F]"), helpDesc.Render("Finalize"),
+		helpKey.Render("[a]"), helpDesc.Render("AI Target"),
 		helpKey.Render("[esc/b]"), helpDesc.Render("Back"),
 		helpKey.Render("[q]"), helpDesc.Render("Quit"),
 	)
@@ -419,6 +424,77 @@ func (m Model) renderResumeModal() string {
 	)
 
 	return modalBox.Width(64).Render(title + "\n\n" + body)
+}
+
+// padOrTruncateAI pads s to width with spaces, or truncates it (with an
+// ellipsis when there's room) so every AI selector row lines up in columns.
+func padOrTruncateAI(s string, width int) string {
+	runes := []rune(s)
+	if len(runes) > width {
+		if width > 3 {
+			return string(runes[:width-3]) + "..."
+		}
+		return string(runes[:width])
+	}
+	return s + strings.Repeat(" ", width-len(runes))
+}
+
+// renderAISelectorModal renders the global AI target picker: every configured
+// provider/model combination, one row each, so the active target can be
+// swapped mid-session without restarting. Mirrors pr-review's AI engine
+// selector, but works directly off config.AITarget instead of a duplicate
+// display type.
+func (m Model) renderAISelectorModal() string {
+	title := modalTitle.Render("Select AI Target")
+
+	var rows []string
+	for i, t := range m.aiTargets {
+		cursor := "  "
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+		modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#A0A0A0"))
+		statusStyle := statusSuccess
+		if !t.Configured {
+			statusStyle = lipgloss.NewStyle().Foreground(warningColor)
+		}
+
+		if i == m.aiSelectorCursor {
+			cursor = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("▶ ")
+			nameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+			modelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
+		}
+
+		activeCheck := "   "
+		if t.ID == m.activeAITargetID {
+			activeCheck = statusSuccess.Render("✓  ")
+		}
+
+		statusText := "Configured"
+		if !t.Configured {
+			statusText = "Key missing"
+		}
+
+		name := t.Name
+		if name == "" {
+			name = t.Provider
+		}
+
+		row := cursor + activeCheck +
+			nameStyle.Render(padOrTruncateAI(fmt.Sprintf("%s (%s)", name, t.Provider), 32)) + "  " +
+			modelStyle.Render(padOrTruncateAI(t.Model, 30)) + "  " +
+			statusStyle.Render(statusText)
+		rows = append(rows, row)
+	}
+
+	if len(rows) == 0 {
+		rows = append(rows, explanationStyle.Render("No AI targets configured."))
+	}
+
+	hint := lipgloss.NewStyle().Foreground(primaryColor).Render(
+		"\n[j/k or ↑/↓] Navigate   [Enter] Select   [Esc] Cancel")
+	rows = append(rows, hint)
+
+	body := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return modalBox.Width(76).Render(title + "\n\n" + body)
 }
 
 // renderHistoryContent formats every completed Round of a session snapshot
@@ -668,13 +744,14 @@ func (m Model) renderTreeHelp() string {
 		)
 	}
 
-	return fmt.Sprintf("%s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s",
+	return fmt.Sprintf("%s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s",
 		helpKey.Render("[↑/↓/j/k]"), helpDesc.Render("Navigate"),
 		helpKey.Render("[Space/x]"), helpDesc.Render("Toggle [x]/[ ]"),
 		helpKey.Render("[e]"), helpDesc.Render("Edit Title"),
 		helpKey.Render("[d]"), helpDesc.Render("Edit Desc"),
 		helpKey.Render("[p]"), helpDesc.Render("Project"),
 		helpKey.Render("[s]"), helpDesc.Render("Sync"),
+		helpKey.Render("[a]"), helpDesc.Render("AI Target"),
 		helpKey.Render("[esc/b]"), helpDesc.Render("Interview"),
 		helpKey.Render("[q]"), helpDesc.Render("Quit"),
 	)
@@ -689,11 +766,12 @@ func (m Model) renderPickerHelp() string {
 		)
 	}
 
-	return fmt.Sprintf("%s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s",
+	return fmt.Sprintf("%s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s  •  %s %s",
 		helpKey.Render("[↑/↓]"), helpDesc.Render("Navigate"),
 		helpKey.Render("[Enter]"), helpDesc.Render("Select Ticket"),
 		helpKey.Render("[Tab / /]"), helpDesc.Render("Manual Key Input"),
 		helpKey.Render("[r]"), helpDesc.Render("Refresh List"),
+		helpKey.Render("[a]"), helpDesc.Render("AI Target"),
 		helpKey.Render("[q]"), helpDesc.Render("Quit"),
 		helpKey.Render("[Ctrl+C]"), helpDesc.Render("Exit"),
 	)

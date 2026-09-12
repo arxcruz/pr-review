@@ -159,6 +159,14 @@ type Model struct {
 	router       *refine.Router
 	planFile     string
 
+	// AI target selection (provider + model), switchable mid-session
+	aiFactory         *ai.Factory
+	aiTargets         []config.AITarget
+	activeAITargetID  string
+	aiSelectorCursor  int
+	aiSelectorModal   bool
+	initialAIProvider string
+
 	// UI layout & screen
 	screen      Screen
 	pickerFocus PickerFocus
@@ -258,6 +266,15 @@ func WithInitialKey(key string) Option {
 	}
 }
 
+// WithInitialAIProvider pre-selects which configured AI target (by target ID,
+// endpoint ID, provider, or name) the AI selector starts on. Matches the
+// resolution used to build the AI engine passed via WithAIEngine.
+func WithInitialAIProvider(provider string) Option {
+	return func(m *Model) {
+		m.initialAIProvider = strings.TrimSpace(provider)
+	}
+}
+
 // NewModel creates an initialized Jira Refine TUI model.
 func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts ...Option) Model {
 	s := spinner.New()
@@ -346,9 +363,92 @@ func NewModel(cfg *config.Config, client jira.Client, store session.Store, opts 
 		m.refineEngine = refine.NewEngine(m.aiEngine, m.promptSet)
 	}
 
+	m.aiFactory = ai.NewFactory(cfg)
+	m.aiTargets = buildAITargets(cfg)
+	selectedID := m.initialAIProvider
+	if selectedID == "" && cfg != nil {
+		selectedID = cfg.DefaultAIProvider
+	}
+	for i, t := range m.aiTargets {
+		if strings.EqualFold(t.ID, selectedID) || strings.EqualFold(t.EndpointID, selectedID) ||
+			strings.EqualFold(t.Provider, selectedID) || strings.EqualFold(t.Name, selectedID) {
+			m.aiSelectorCursor = i
+			m.activeAITargetID = t.ID
+			break
+		}
+	}
+	if m.activeAITargetID == "" && len(m.aiTargets) > 0 {
+		m.activeAITargetID = m.aiTargets[0].ID
+	}
+
 	m.updateLayout()
 
 	return m
+}
+
+// matchesKeyList reports whether key is one of the bound keys in list.
+func matchesKeyList(key string, list config.KeyList) bool {
+	for _, k := range list {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// buildAITargets resolves every configured AI endpoint/model combination for
+// the selector, falling back to a single local Ollama entry when nothing is
+// configured so the picker is never empty.
+func buildAITargets(cfg *config.Config) []config.AITarget {
+	targets := config.GetAllAITargets(cfg)
+	if len(targets) == 0 {
+		targets = []config.AITarget{{
+			ID:         "ollama",
+			Provider:   "ollama",
+			Name:       "Ollama (Local AI)",
+			Model:      "qwen2.5-coder:latest",
+			BaseURL:    "http://localhost:11434/v1",
+			Configured: true,
+		}}
+	}
+	return targets
+}
+
+// applyAITarget switches the active AI engine, model override, and delivery
+// project router to the given target, taking effect on every subsequent AI
+// call site (frontier generation, decomposition-tree generation, routing) for
+// the rest of the session.
+func (m *Model) applyAITarget(t config.AITarget) {
+	if m.aiFactory == nil {
+		return
+	}
+	eng, err := m.aiFactory.GetEngine(t.ID)
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Failed to switch AI target: %v", err)
+		m.statusIsErr = true
+		return
+	}
+
+	m.aiEngine = eng
+	m.activeAITargetID = t.ID
+	m.frontierOpts.Model = t.Model
+
+	if m.promptSet != nil {
+		m.refineEngine = refine.NewEngine(m.aiEngine, m.promptSet)
+	}
+
+	var jiraCfg *config.JiraConfig
+	if m.cfg != nil {
+		jiraCfg = &m.cfg.Jira
+	}
+	m.router = refine.NewRouter(jiraCfg, refine.WithAIEngine(m.aiEngine), refine.WithModel(t.Model))
+
+	name := t.Name
+	if name == "" {
+		name = t.Provider
+	}
+	m.statusMsg = fmt.Sprintf("Switched AI target to %s (%s)", name, t.Model)
+	m.statusIsErr = false
 }
 
 // Accessor methods for inspectability and testing
@@ -799,6 +899,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "Session selection cancelled"
 				m.statusIsErr = false
 				return m, nil
+			}
+			return m, nil
+		}
+
+		// AI target selector modal: a global overlay (per Q5) reachable from
+		// any screen, so the active provider/model can be swapped before any
+		// AI-driven step, not just the first one.
+		if m.aiSelectorModal {
+			switch {
+			case k == "down" || k == "j":
+				if len(m.aiTargets) > 0 {
+					m.aiSelectorCursor = (m.aiSelectorCursor + 1) % len(m.aiTargets)
+				}
+				return m, nil
+
+			case k == "up" || k == "k":
+				if len(m.aiTargets) > 0 {
+					m.aiSelectorCursor = (m.aiSelectorCursor - 1 + len(m.aiTargets)) % len(m.aiTargets)
+				}
+				return m, nil
+
+			case k == "enter" || k == " ":
+				if m.aiSelectorCursor >= 0 && m.aiSelectorCursor < len(m.aiTargets) {
+					m.applyAITarget(m.aiTargets[m.aiSelectorCursor])
+				}
+				m.aiSelectorModal = false
+				return m, nil
+
+			case k == "esc" || k == "q" || matchesKeyList(k, m.cfg.Keybindings.SelectAI):
+				m.aiSelectorModal = false
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// Open the AI target selector. Global (any screen), but skipped
+		// wherever the current context consumes every keystroke as free text
+		// (the ticket-key input, the Context Note textarea, or an in-progress
+		// interview/tree edit) so the shortcut key can still be typed there.
+		if matchesKeyList(k, m.cfg.Keybindings.SelectAI) &&
+			!(m.screen == ScreenPicker && m.pickerFocus == FocusInput) &&
+			m.screen != ScreenOverview &&
+			!m.interviewEditing && !m.treeEditing {
+			m.aiSelectorModal = true
+			for i, t := range m.aiTargets {
+				if t.ID == m.activeAITargetID {
+					m.aiSelectorCursor = i
+					break
+				}
 			}
 			return m, nil
 		}

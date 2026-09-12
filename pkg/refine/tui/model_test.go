@@ -1169,6 +1169,128 @@ func TestInterview_FinalizeRefinementShortcut(t *testing.T) {
 	}
 }
 
+func TestAISelector_OpenNavigateAndSelect_SwitchesActiveTarget(t *testing.T) {
+	cfg := &config.Config{
+		Keybindings: config.DefaultKeybindings(),
+		Jira: config.JiraConfig{
+			OriginProject: "STRAT",
+		},
+		AI: config.AIConfig{
+			Endpoints: []config.AIEndpointConfig{
+				{ID: "local-ollama", Provider: "ollama", Model: "qwen2.5-coder:latest"},
+				{ID: "work-anthropic", Provider: "anthropic", Model: "claude-3-7-sonnet-20250219", APIKey: "test-key"},
+			},
+		},
+	}
+	client := &mockJiraClient{}
+	store := session.NewFileStore(t.TempDir())
+
+	m := NewModel(cfg, client, store)
+	m.loading = false
+
+	if len(m.aiTargets) != 2 {
+		t.Fatalf("expected 2 AI targets, got %d", len(m.aiTargets))
+	}
+	if m.activeAITargetID != "local-ollama" {
+		t.Fatalf("expected initial active target 'local-ollama' (config default), got %q", m.activeAITargetID)
+	}
+
+	// Open the selector.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = updated.(Model)
+	if !m.aiSelectorModal {
+		t.Fatalf("expected AI selector modal to open on 'a'")
+	}
+	if !strings.Contains(m.View(), "Select AI Target") {
+		t.Fatalf("expected selector title in view")
+	}
+
+	// Move to the second row and select it.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = updated.(Model)
+	if m.aiSelectorCursor != 1 {
+		t.Fatalf("expected cursor at index 1 after 'j', got %d", m.aiSelectorCursor)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	if m.aiSelectorModal {
+		t.Fatalf("expected modal to close after selection")
+	}
+	if m.activeAITargetID != "work-anthropic" {
+		t.Fatalf("expected active target 'work-anthropic', got %q", m.activeAITargetID)
+	}
+	if m.aiEngine == nil {
+		t.Fatalf("expected AI engine to be set after switching")
+	}
+	if m.router == nil {
+		t.Fatalf("expected router to be rebuilt after switching")
+	}
+	status, isErr := m.StatusMsg()
+	if isErr || !strings.Contains(status, "work-anthropic") && !strings.Contains(status, "claude-3-7-sonnet-20250219") {
+		t.Fatalf("expected status message to reflect the switch, got %q (err=%v)", status, isErr)
+	}
+}
+
+func TestAISelector_EscCancelsWithoutChangingTarget(t *testing.T) {
+	cfg := &config.Config{
+		Keybindings: config.DefaultKeybindings(),
+		AI: config.AIConfig{
+			Endpoints: []config.AIEndpointConfig{
+				{ID: "local-ollama", Provider: "ollama", Model: "qwen2.5-coder:latest"},
+				{ID: "work-anthropic", Provider: "anthropic", Model: "claude-3-7-sonnet-20250219", APIKey: "test-key"},
+			},
+		},
+	}
+	client := &mockJiraClient{}
+	store := session.NewFileStore(t.TempDir())
+	m := NewModel(cfg, client, store)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(Model)
+
+	if m.aiSelectorModal {
+		t.Fatalf("expected modal to close on esc")
+	}
+	if m.activeAITargetID != "local-ollama" {
+		t.Fatalf("expected active target unchanged after cancel, got %q", m.activeAITargetID)
+	}
+}
+
+func TestAISelector_SkippedWhileTypingTicketKey(t *testing.T) {
+	cfg := &config.Config{
+		Keybindings: config.DefaultKeybindings(),
+		AI: config.AIConfig{
+			Endpoints: []config.AIEndpointConfig{
+				{ID: "local-ollama", Provider: "ollama", Model: "qwen2.5-coder:latest"},
+			},
+		},
+	}
+	client := &mockJiraClient{}
+	store := session.NewFileStore(t.TempDir())
+	m := NewModel(cfg, client, store)
+
+	// Focus the manual ticket-key input.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.PickerFocus() != FocusInput {
+		t.Fatalf("expected input focus after tab")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = updated.(Model)
+
+	if m.aiSelectorModal {
+		t.Fatalf("expected 'a' to be typed into the input, not open the AI selector")
+	}
+	if m.InputValue() != "a" {
+		t.Fatalf("expected 'a' typed into ticket key input, got %q", m.InputValue())
+	}
+}
+
 func TestInterview_ActionButtonsAndScrolling(t *testing.T) {
 	m, _, store := setupTestModel(t)
 	snap := &session.Snapshot{
