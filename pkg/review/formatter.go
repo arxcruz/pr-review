@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/arxcruz/pr-review/pkg/config"
 	"github.com/arxcruz/pr-review/pkg/gitprovider"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -90,6 +91,78 @@ func PrintPullRequestsTable(w io.Writer, prs []*gitprovider.PullRequest) {
 
 	fmt.Fprintln(w, t.Render())
 	fmt.Fprintf(w, "%s Total: %d pull/merge request(s)\n", metaStyle.Render("•"), len(prs))
+}
+
+// projectLocator returns the repo/path identifier appropriate to the project's provider
+func projectLocator(p config.ProjectConfig) string {
+	switch strings.ToLower(p.Provider) {
+	case "gitlab":
+		return p.ProjectPath
+	case "gerrit":
+		return p.Repo
+	default: // github
+		if p.Owner != "" || p.Repo != "" {
+			return p.Owner + "/" + p.Repo
+		}
+		return p.Repo
+	}
+}
+
+// PrintProjectsTable prints the configured projects in a prettytable-style box table.
+// With verbose set, it also prints each project's description and default filters.
+func PrintProjectsTable(w io.Writer, projects []config.ProjectConfig, verbose bool) {
+	if len(projects) == 0 {
+		fmt.Fprintln(w, warnStyle.Render("No projects configured. Add entries under 'projects:' in your config file."))
+		return
+	}
+
+	var rows [][]string
+	for _, p := range projects {
+		rows = append(rows, []string{
+			p.ID,
+			p.Provider,
+			projectLocator(p),
+		})
+	}
+
+	t := table.New().
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("#626262"))).
+		Headers("ID", "PROVIDER", "REPO").
+		Rows(rows...).
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return headerStyle
+			}
+			return cellStyle
+		})
+
+	fmt.Fprintln(w, t.Render())
+	fmt.Fprintf(w, "%s Total: %d project(s)\n", metaStyle.Render("•"), len(projects))
+
+	if !verbose {
+		return
+	}
+
+	for _, p := range projects {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, titleStyle.Render(p.ID))
+		desc := p.Description
+		if desc == "" {
+			desc = "-"
+		}
+		fmt.Fprintf(w, "  Description: %s\n", desc)
+
+		authors := "-"
+		if len(p.DefaultFilters.Authors) > 0 {
+			authors = strings.Join(p.DefaultFilters.Authors, ", ")
+		}
+		labels := "-"
+		if len(p.DefaultFilters.Labels) > 0 {
+			labels = strings.Join(p.DefaultFilters.Labels, ", ")
+		}
+		fmt.Fprintf(w, "  Default filters: authors=%s labels=%s\n", authors, labels)
+	}
 }
 
 // PrintReviewOutcome prints the formatted AI review outcome
